@@ -131,6 +131,7 @@ def render_sidebar():
             ("📊", "dashboard", "儀表板"),
             ("⚠️", "alerts", "警示處理"),
             ("👥", "patients", "病人管理"),
+            ("📚", "education", "衛教管理"),
             ("📝", "interventions", "介入紀錄"),
             ("📈", "reports", "報表統計"),
         ]
@@ -584,6 +585,337 @@ def render_patients():
             st.error(f"載入病人資料失敗: {e}")
 
 # ============================================
+# 衛教管理
+# ============================================
+
+# 衛教材料庫
+EDUCATION_MATERIALS = {
+    "BREATHING": {
+        "id": "BREATHING",
+        "title": "呼吸運動訓練",
+        "category": "呼吸訓練",
+        "description": "術後呼吸訓練指導，包含深呼吸、咳嗽技巧、誘發性肺活量計使用",
+        "timing": "D+1~D+7"
+    },
+    "PAIN": {
+        "id": "PAIN",
+        "title": "疼痛控制指南",
+        "category": "疼痛控制",
+        "description": "術後疼痛管理，包含藥物使用、非藥物緩解方法",
+        "timing": "D+1~D+14"
+    },
+    "WOUND": {
+        "id": "WOUND",
+        "title": "傷口照護",
+        "category": "傷口照護",
+        "description": "傷口清潔、換藥、感染徵兆辨識",
+        "timing": "D+3~D+14"
+    },
+    "HOME": {
+        "id": "HOME",
+        "title": "居家照護指南",
+        "category": "居家照護",
+        "description": "出院後居家生活注意事項、活動建議",
+        "timing": "出院前"
+    },
+    "WARNING": {
+        "id": "WARNING",
+        "title": "警示徵象",
+        "category": "警示徵象",
+        "description": "需立即就醫的警示徵象：發燒、呼吸困難、傷口異常等",
+        "timing": "全程"
+    },
+    "EXERCISE": {
+        "id": "EXERCISE",
+        "title": "術後運動建議",
+        "category": "復健運動",
+        "description": "漸進式活動、肩關節運動、步行訓練",
+        "timing": "D+7~D+30"
+    },
+    "NUTRITION": {
+        "id": "NUTRITION",
+        "title": "營養補充指南",
+        "category": "營養照護",
+        "description": "術後飲食建議、蛋白質攝取、維生素補充",
+        "timing": "全程"
+    },
+    "MEDICATION": {
+        "id": "MEDICATION",
+        "title": "藥物使用指南",
+        "category": "藥物衛教",
+        "description": "出院藥物使用說明、副作用注意事項",
+        "timing": "出院前"
+    },
+    "FOLLOWUP": {
+        "id": "FOLLOWUP",
+        "title": "門診追蹤須知",
+        "category": "追蹤照護",
+        "description": "回診時間、檢查項目、注意事項",
+        "timing": "出院前"
+    }
+}
+
+# 自動推播規則
+AUTO_PUSH_RULES = [
+    {"day": 1, "materials": ["BREATHING", "PAIN"], "description": "術後第1天：呼吸訓練、疼痛控制"},
+    {"day": 3, "materials": ["WOUND"], "description": "術後第3天：傷口照護"},
+    {"day": 5, "materials": ["WARNING"], "description": "術後第5天：警示徵象"},
+    {"day": 7, "materials": ["EXERCISE", "HOME"], "description": "術後第7天：運動建議、居家照護"},
+    {"day": 14, "materials": ["NUTRITION"], "description": "術後第14天：營養指南"},
+    {"day": 30, "materials": ["FOLLOWUP"], "description": "術後第30天：門診追蹤"},
+]
+
+def render_education():
+    """衛教管理"""
+    st.title("📚 衛教管理")
+    
+    if not GSHEETS_AVAILABLE:
+        st.error("無法連線到資料庫")
+        return
+    
+    tab1, tab2, tab3, tab4 = st.tabs(["📤 手動推播", "🤖 自動推播規則", "📋 推播紀錄", "📖 衛教材料庫"])
+    
+    # === 手動推播 ===
+    with tab1:
+        st.subheader("📤 手動推播衛教")
+        
+        try:
+            patients = get_all_patients()
+            
+            if patients:
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # 選擇推播對象
+                    push_target = st.radio(
+                        "推播對象",
+                        ["單一病人", "依術後天數", "依手術類型", "全部病人"],
+                        horizontal=True
+                    )
+                    
+                    selected_patients = []
+                    
+                    if push_target == "單一病人":
+                        patient_options = {f"{p.get('name', '未知')} ({p.get('patient_id')}) D+{p.get('post_op_day', 0)}": p for p in patients}
+                        selected_label = st.selectbox("選擇病人", list(patient_options.keys()))
+                        if selected_label:
+                            selected_patients = [patient_options[selected_label]]
+                    
+                    elif push_target == "依術後天數":
+                        col_a, col_b = st.columns(2)
+                        with col_a:
+                            min_day = st.number_input("最小天數", min_value=0, value=0)
+                        with col_b:
+                            max_day = st.number_input("最大天數", min_value=0, value=30)
+                        selected_patients = [p for p in patients if min_day <= p.get("post_op_day", 0) <= max_day]
+                        st.info(f"符合條件：{len(selected_patients)} 人")
+                    
+                    elif push_target == "依手術類型":
+                        surgery_types = list(set([p.get("surgery_type", "未知") for p in patients]))
+                        selected_type = st.selectbox("選擇手術類型", surgery_types)
+                        selected_patients = [p for p in patients if p.get("surgery_type") == selected_type]
+                        st.info(f"符合條件：{len(selected_patients)} 人")
+                    
+                    else:  # 全部病人
+                        selected_patients = patients
+                        st.info(f"全部病人：{len(selected_patients)} 人")
+                
+                with col2:
+                    # 選擇衛教材料
+                    st.markdown("**選擇衛教材料**")
+                    
+                    selected_materials = []
+                    for mat_id, mat in EDUCATION_MATERIALS.items():
+                        if st.checkbox(f"{mat['title']} ({mat['category']})", key=f"mat_{mat_id}"):
+                            selected_materials.append(mat)
+                
+                # 推播按鈕
+                st.divider()
+                
+                if selected_patients and selected_materials:
+                    st.success(f"準備推播 **{len(selected_materials)}** 項衛教給 **{len(selected_patients)}** 位病人")
+                    
+                    if st.button("📤 確認推播", type="primary", use_container_width=True):
+                        success_count = 0
+                        for patient in selected_patients:
+                            for mat in selected_materials:
+                                push_data = {
+                                    "patient_id": patient.get("patient_id"),
+                                    "patient_name": patient.get("name"),
+                                    "material_id": mat["id"],
+                                    "material_title": mat["title"],
+                                    "category": mat["category"],
+                                    "push_type": "manual",
+                                    "pushed_by": st.session_state.username
+                                }
+                                result = push_education(push_data)
+                                if result:
+                                    success_count += 1
+                        
+                        st.success(f"✅ 成功推播 {success_count} 則衛教！")
+                        st.balloons()
+                else:
+                    st.warning("請選擇推播對象和衛教材料")
+            else:
+                st.info("尚無病人資料")
+                
+        except Exception as e:
+            st.error(f"載入資料失敗: {e}")
+    
+    # === 自動推播規則 ===
+    with tab2:
+        st.subheader("🤖 自動推播規則")
+        
+        st.info("""
+        **自動推播機制說明**：
+        系統會根據病人的術後天數，自動推播對應的衛教材料。
+        個管師可以在此查看規則，並手動觸發推播。
+        """)
+        
+        for rule in AUTO_PUSH_RULES:
+            with st.expander(f"📅 D+{rule['day']}：{rule['description']}", expanded=False):
+                col1, col2 = st.columns([3, 1])
+                
+                with col1:
+                    st.write("**推播內容：**")
+                    for mat_id in rule["materials"]:
+                        mat = EDUCATION_MATERIALS.get(mat_id, {})
+                        st.write(f"- {mat.get('title', mat_id)}：{mat.get('description', '')}")
+                
+                with col2:
+                    # 計算符合條件的病人
+                    try:
+                        patients = get_all_patients()
+                        eligible = [p for p in patients if p.get("post_op_day", 0) == rule["day"]]
+                        
+                        if eligible:
+                            st.metric("符合病人", len(eligible))
+                            if st.button(f"推播 D+{rule['day']}", key=f"auto_push_{rule['day']}"):
+                                success = 0
+                                for patient in eligible:
+                                    for mat_id in rule["materials"]:
+                                        mat = EDUCATION_MATERIALS.get(mat_id, {})
+                                        push_data = {
+                                            "patient_id": patient.get("patient_id"),
+                                            "patient_name": patient.get("name"),
+                                            "material_id": mat_id,
+                                            "material_title": mat.get("title", ""),
+                                            "category": mat.get("category", ""),
+                                            "push_type": "rule",
+                                            "pushed_by": st.session_state.username
+                                        }
+                                        if push_education(push_data):
+                                            success += 1
+                                st.success(f"已推播 {success} 則")
+                        else:
+                            st.write("目前無符合")
+                    except:
+                        pass
+        
+        st.divider()
+        
+        # 批次執行自動推播
+        st.markdown("##### ⚡ 批次執行")
+        if st.button("🚀 執行今日所有自動推播", type="primary"):
+            try:
+                patients = get_all_patients()
+                total_pushed = 0
+                
+                for patient in patients:
+                    post_op_day = patient.get("post_op_day", 0)
+                    
+                    # 檢查是否有對應規則
+                    for rule in AUTO_PUSH_RULES:
+                        if rule["day"] == post_op_day:
+                            for mat_id in rule["materials"]:
+                                mat = EDUCATION_MATERIALS.get(mat_id, {})
+                                push_data = {
+                                    "patient_id": patient.get("patient_id"),
+                                    "patient_name": patient.get("name"),
+                                    "material_id": mat_id,
+                                    "material_title": mat.get("title", ""),
+                                    "category": mat.get("category", ""),
+                                    "push_type": "auto",
+                                    "pushed_by": "system"
+                                }
+                                if push_education(push_data):
+                                    total_pushed += 1
+                
+                if total_pushed > 0:
+                    st.success(f"✅ 完成！共推播 {total_pushed} 則衛教")
+                else:
+                    st.info("今日沒有需要自動推播的病人")
+            except Exception as e:
+                st.error(f"執行失敗: {e}")
+    
+    # === 推播紀錄 ===
+    with tab3:
+        st.subheader("📋 推播紀錄")
+        
+        try:
+            education = get_education_pushes()
+            
+            if education:
+                # 篩選
+                col1, col2 = st.columns(2)
+                with col1:
+                    filter_status = st.selectbox("狀態", ["全部", "已讀", "未讀"])
+                with col2:
+                    filter_type = st.selectbox("推播類型", ["全部", "手動", "自動", "規則"])
+                
+                # 篩選資料
+                filtered = education
+                if filter_status == "已讀":
+                    filtered = [e for e in filtered if e.get("status") == "read"]
+                elif filter_status == "未讀":
+                    filtered = [e for e in filtered if e.get("status") != "read"]
+                
+                if filter_type == "手動":
+                    filtered = [e for e in filtered if e.get("push_type") == "manual"]
+                elif filter_type == "自動":
+                    filtered = [e for e in filtered if e.get("push_type") == "auto"]
+                elif filter_type == "規則":
+                    filtered = [e for e in filtered if e.get("push_type") == "rule"]
+                
+                st.info(f"共 {len(filtered)} 筆紀錄")
+                
+                # 顯示紀錄
+                for edu in sorted(filtered, key=lambda x: x.get("pushed_at", ""), reverse=True)[:50]:
+                    status_icon = "✅" if edu.get("status") == "read" else "📤"
+                    push_type_label = {"manual": "手動", "auto": "自動", "rule": "規則"}.get(edu.get("push_type", ""), "")
+                    
+                    with st.expander(f"{status_icon} {edu.get('patient_name', '')} - {edu.get('material_title', '')} [{push_type_label}]"):
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.write(f"**病人**: {edu.get('patient_name', '')}")
+                            st.write(f"**衛教**: {edu.get('material_title', '')}")
+                            st.write(f"**類別**: {edu.get('category', '')}")
+                        with col2:
+                            st.write(f"**推播時間**: {edu.get('pushed_at', '')[:19] if edu.get('pushed_at') else ''}")
+                            st.write(f"**推播者**: {edu.get('pushed_by', '')}")
+                            st.write(f"**狀態**: {'已讀 ✅' if edu.get('status') == 'read' else '未讀'}")
+                            if edu.get("read_at"):
+                                st.write(f"**閱讀時間**: {edu.get('read_at', '')[:19]}")
+            else:
+                st.info("尚無推播紀錄")
+                
+        except Exception as e:
+            st.error(f"載入紀錄失敗: {e}")
+    
+    # === 衛教材料庫 ===
+    with tab4:
+        st.subheader("📖 衛教材料庫")
+        
+        for mat_id, mat in EDUCATION_MATERIALS.items():
+            with st.expander(f"📄 {mat['title']} - {mat['category']}"):
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.write(f"**說明**: {mat['description']}")
+                    st.write(f"**建議時機**: {mat['timing']}")
+                with col2:
+                    st.write(f"**ID**: {mat['id']}")
+
+# ============================================
 # 介入紀錄
 # ============================================
 def render_interventions():
@@ -767,6 +1099,8 @@ def main():
             render_alerts()
         elif page == "patients":
             render_patients()
+        elif page == "education":
+            render_education()
         elif page == "interventions":
             render_interventions()
         elif page == "reports":

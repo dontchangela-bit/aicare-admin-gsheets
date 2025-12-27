@@ -51,6 +51,7 @@ def render_advanced_reports(get_all_patients, get_all_reports, get_interventions
             "🔔 警示統計分析",
             "✅ 回報依從性分析",
             "🌡️ 症狀熱力圖",
+            "📚 衛教統計分析",
             "👥 病人分群分析",
             "👩‍⚕️ 個管師工作量",
             "📥 資料匯出"
@@ -69,6 +70,8 @@ def render_advanced_reports(get_all_patients, get_all_reports, get_interventions
         render_adherence_analysis(patients, reports)
     elif report_type == "🌡️ 症狀熱力圖":
         render_symptom_heatmap(patients, reports)
+    elif report_type == "📚 衛教統計分析":
+        render_education_analytics(patients, get_education_pushes)
     elif report_type == "👥 病人分群分析":
         render_cohort_analysis(patients, reports)
     elif report_type == "👩‍⚕️ 個管師工作量":
@@ -654,6 +657,138 @@ def render_symptom_heatmap(patients, reports):
         st.caption("💡 顏色說明：綠色=症狀輕微，黃色=中度，紅色=嚴重")
     else:
         st.info("尚無足夠的症狀資料進行分析")
+
+
+def render_education_analytics(patients, get_education_pushes):
+    """衛教統計分析"""
+    st.subheader("📚 衛教統計分析")
+    
+    # 取得衛教資料
+    try:
+        education = get_education_pushes()
+    except:
+        education = []
+    
+    if not education:
+        st.info("尚無衛教推播紀錄")
+        return
+    
+    # === KPI 指標 ===
+    col1, col2, col3, col4 = st.columns(4)
+    
+    total_pushes = len(education)
+    read_pushes = len([e for e in education if e.get("status") == "read"])
+    read_rate = (read_pushes / total_pushes * 100) if total_pushes > 0 else 0
+    
+    with col1:
+        st.metric("📤 總推播數", total_pushes)
+    with col2:
+        st.metric("👁️ 已讀數", read_pushes)
+    with col3:
+        st.metric("📊 閱讀率", f"{read_rate:.1f}%")
+    with col4:
+        unique_patients = len(set([e.get("patient_id") for e in education]))
+        st.metric("👥 涵蓋病人數", unique_patients)
+    
+    st.divider()
+    
+    # === 各類衛教推播統計 ===
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("##### 📂 各類別推播統計")
+        category_stats = {}
+        for e in education:
+            cat = e.get("category", "未分類")
+            if cat not in category_stats:
+                category_stats[cat] = {"推播": 0, "已讀": 0}
+            category_stats[cat]["推播"] += 1
+            if e.get("status") == "read":
+                category_stats[cat]["已讀"] += 1
+        
+        cat_df = pd.DataFrame([
+            {"類別": k, "推播數": v["推播"], "已讀數": v["已讀"], 
+             "閱讀率": f"{v['已讀']/v['推播']*100:.1f}%" if v["推播"] > 0 else "0%"}
+            for k, v in category_stats.items()
+        ])
+        
+        if not cat_df.empty:
+            fig = px.bar(cat_df, x="類別", y=["推播數", "已讀數"], barmode="group")
+            fig.update_layout(height=300)
+            st.plotly_chart(fig, use_container_width=True)
+    
+    with col2:
+        st.markdown("##### 📈 推播方式分布")
+        push_type_stats = {}
+        for e in education:
+            pt = e.get("push_type", "manual")
+            push_type_labels = {
+                "auto": "🤖 自動推播",
+                "manual": "👤 手動推播",
+                "rule": "📋 規則推播"
+            }
+            label = push_type_labels.get(pt, pt)
+            push_type_stats[label] = push_type_stats.get(label, 0) + 1
+        
+        if push_type_stats:
+            fig = px.pie(
+                values=list(push_type_stats.values()),
+                names=list(push_type_stats.keys()),
+                hole=0.4
+            )
+            fig.update_layout(height=300)
+            st.plotly_chart(fig, use_container_width=True)
+    
+    # === 各衛教材料統計 ===
+    st.markdown("##### 📖 各衛教材料統計")
+    
+    material_stats = {}
+    for e in education:
+        title = e.get("material_title", "未知")
+        if title not in material_stats:
+            material_stats[title] = {"推播": 0, "已讀": 0}
+        material_stats[title]["推播"] += 1
+        if e.get("status") == "read":
+            material_stats[title]["已讀"] += 1
+    
+    mat_df = pd.DataFrame([
+        {"衛教材料": k, "推播數": v["推播"], "已讀數": v["已讀"],
+         "閱讀率": round(v["已讀"]/v["推播"]*100, 1) if v["推播"] > 0 else 0}
+        for k, v in material_stats.items()
+    ]).sort_values("推播數", ascending=False)
+    
+    if not mat_df.empty:
+        st.dataframe(mat_df, hide_index=True, use_container_width=True)
+    
+    # === 病人衛教涵蓋率 ===
+    st.markdown("##### 👥 病人衛教涵蓋分析")
+    
+    patient_edu_stats = {}
+    for e in education:
+        pid = e.get("patient_id")
+        pname = e.get("patient_name", "")
+        if pid not in patient_edu_stats:
+            patient_edu_stats[pid] = {"name": pname, "推播": 0, "已讀": 0}
+        patient_edu_stats[pid]["推播"] += 1
+        if e.get("status") == "read":
+            patient_edu_stats[pid]["已讀"] += 1
+    
+    # 找出未收到衛教的病人
+    edu_patient_ids = set(patient_edu_stats.keys())
+    all_patient_ids = set([p.get("patient_id") for p in patients])
+    no_edu_patients = all_patient_ids - edu_patient_ids
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("✅ 已收到衛教", len(edu_patient_ids))
+    with col2:
+        st.metric("⚠️ 未收到衛教", len(no_edu_patients))
+    
+    if no_edu_patients:
+        with st.expander(f"查看 {len(no_edu_patients)} 位未收到衛教的病人"):
+            no_edu_list = [p for p in patients if p.get("patient_id") in no_edu_patients]
+            for p in no_edu_list[:20]:
+                st.write(f"- {p.get('name', '未知')} ({p.get('patient_id')}) - D+{p.get('post_op_day', 0)}")
 
 
 def render_cohort_analysis(patients, reports):
