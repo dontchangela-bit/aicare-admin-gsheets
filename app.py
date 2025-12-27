@@ -272,7 +272,7 @@ def render_patients():
         st.error("無法連線到資料庫")
         return
     
-    tab1, tab2 = st.tabs(["📋 病人列表", "⚙️ 病人設定"])
+    tab1, tab2, tab3 = st.tabs(["📋 病人列表", "📈 追蹤歷程", "⚙️ 病人設定"])
     
     # === 病人列表 ===
     with tab1:
@@ -288,7 +288,7 @@ def render_patients():
                 
                 # 顯示列表
                 for patient in patients:
-                    status_icon = "🟢" if patient.get("status") == "normal" else "🟡" if patient.get("status") == "pending_setup" else "⚪"
+                    status_icon = "🟢" if patient.get("status") == "normal" else "🟡" if patient.get("status") == "pending_setup" else "🏥" if patient.get("status") == "hospitalized" else "⚪"
                     
                     with st.expander(f"{status_icon} {patient.get('name', '未知')} ({patient.get('patient_id', '')})"):
                         col1, col2 = st.columns(2)
@@ -307,8 +307,175 @@ def render_patients():
         except Exception as e:
             st.error(f"載入病人資料失敗: {e}")
     
-    # === 病人設定（修正版）===
+    # === 追蹤歷程（新增）===
     with tab2:
+        st.subheader("📈 病人追蹤歷程")
+        
+        try:
+            patients = get_all_patients()
+            
+            if patients:
+                # 選擇病人
+                patient_options = {f"{p.get('name', '未知')} ({p.get('patient_id', '')}) - D+{p.get('post_op_day', 0)}": p.get('patient_id') for p in patients}
+                
+                selected_label = st.selectbox(
+                    "選擇病人查看追蹤歷程",
+                    options=list(patient_options.keys()),
+                    key="history_patient_selector"
+                )
+                
+                if selected_label:
+                    selected_patient_id = patient_options[selected_label]
+                    
+                    # 找到病人資料
+                    selected_patient = None
+                    for p in patients:
+                        if p.get("patient_id") == selected_patient_id:
+                            selected_patient = p
+                            break
+                    
+                    if selected_patient:
+                        # 顯示病人基本資訊
+                        st.markdown("---")
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            st.metric("姓名", selected_patient.get("name", ""))
+                        with col2:
+                            st.metric("術後天數", f"D+{selected_patient.get('post_op_day', 0)}")
+                        with col3:
+                            st.metric("手術類型", selected_patient.get("surgery_type", ""))
+                        with col4:
+                            st.metric("狀態", selected_patient.get("status", ""))
+                        
+                        # 取得該病人的所有回報
+                        reports = get_patient_reports(selected_patient_id)
+                        
+                        if reports:
+                            # 依日期排序
+                            reports_sorted = sorted(reports, key=lambda x: x.get("date", ""), reverse=False)
+                            
+                            st.markdown("---")
+                            st.subheader(f"📊 回報趨勢圖（共 {len(reports_sorted)} 筆回報）")
+                            
+                            # 準備圖表資料
+                            import pandas as pd
+                            
+                            chart_data = []
+                            for r in reports_sorted:
+                                chart_data.append({
+                                    "日期": r.get("date", ""),
+                                    "整體評分": r.get("overall_score", 0),
+                                    "警示等級": r.get("alert_level", "green")
+                                })
+                            
+                            df = pd.DataFrame(chart_data)
+                            
+                            if not df.empty:
+                                # 繪製折線圖
+                                st.line_chart(df.set_index("日期")["整體評分"])
+                                
+                                # 統計摘要
+                                col1, col2, col3, col4 = st.columns(4)
+                                with col1:
+                                    avg_score = df["整體評分"].mean()
+                                    st.metric("平均評分", f"{avg_score:.1f}")
+                                with col2:
+                                    red_count = len([r for r in reports_sorted if r.get("alert_level") == "red"])
+                                    st.metric("🔴 紅色警示", f"{red_count} 次")
+                                with col3:
+                                    yellow_count = len([r for r in reports_sorted if r.get("alert_level") == "yellow"])
+                                    st.metric("🟡 黃色警示", f"{yellow_count} 次")
+                                with col4:
+                                    green_count = len([r for r in reports_sorted if r.get("alert_level") == "green"])
+                                    st.metric("✅ 正常", f"{green_count} 次")
+                            
+                            # 詳細回報列表
+                            st.markdown("---")
+                            st.subheader("📋 詳細回報紀錄")
+                            
+                            # 顯示選項
+                            show_all = st.checkbox("顯示所有回報（預設只顯示最近 30 筆）")
+                            
+                            display_reports = reports_sorted if show_all else reports_sorted[-30:]
+                            display_reports = sorted(display_reports, key=lambda x: x.get("date", ""), reverse=True)
+                            
+                            for report in display_reports:
+                                alert_level = report.get("alert_level", "green")
+                                if alert_level == "red":
+                                    alert_icon = "🔴"
+                                    alert_color = "red"
+                                elif alert_level == "yellow":
+                                    alert_icon = "🟡"
+                                    alert_color = "orange"
+                                else:
+                                    alert_icon = "✅"
+                                    alert_color = "green"
+                                
+                                handled = "已處理" if report.get("alert_handled") == "Y" else "未處理"
+                                
+                                with st.expander(f"{alert_icon} {report.get('date', '')} - 評分: {report.get('overall_score', 0)}/10 ({handled})"):
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        st.write(f"**日期**: {report.get('date', '')}")
+                                        st.write(f"**時間**: {report.get('timestamp', '')[:19] if report.get('timestamp') else ''}")
+                                        st.write(f"**整體評分**: {report.get('overall_score', 0)}/10")
+                                        st.write(f"**警示等級**: {alert_icon} {alert_level}")
+                                    with col2:
+                                        st.write(f"**處理狀態**: {handled}")
+                                        st.write(f"**處理人**: {report.get('handled_by', '-')}")
+                                        st.write(f"**對話輪數**: {report.get('messages_count', 0)}")
+                                    
+                                    # 顯示症狀詳情
+                                    symptoms_str = report.get("symptoms", "{}")
+                                    try:
+                                        import json
+                                        symptoms = json.loads(symptoms_str) if isinstance(symptoms_str, str) else symptoms_str
+                                        if symptoms:
+                                            st.write("**症狀評分:**")
+                                            symptom_names = {
+                                                "dyspnea": "呼吸困難",
+                                                "pain": "疼痛",
+                                                "cough": "咳嗽",
+                                                "fatigue": "疲勞",
+                                                "sleep": "睡眠",
+                                                "appetite": "食慾",
+                                                "mood": "情緒"
+                                            }
+                                            cols = st.columns(4)
+                                            for i, (key, value) in enumerate(symptoms.items()):
+                                                with cols[i % 4]:
+                                                    display_name = symptom_names.get(key, key)
+                                                    st.write(f"- {display_name}: {value}/10")
+                                    except:
+                                        pass
+                        else:
+                            st.info("此病人尚無回報紀錄")
+                        
+                        # 介入紀錄
+                        st.markdown("---")
+                        st.subheader("📝 介入紀錄")
+                        
+                        interventions = get_interventions(selected_patient_id)
+                        
+                        if interventions:
+                            for inv in interventions[:10]:
+                                with st.expander(f"📝 {inv.get('date', '')} - {inv.get('method', '')}"):
+                                    st.write(f"**聯繫方式**: {inv.get('method', '')}")
+                                    st.write(f"**時長**: {inv.get('duration', '')} 分鐘")
+                                    st.write(f"**內容**: {inv.get('content', '')}")
+                                    st.write(f"**記錄者**: {inv.get('created_by', '')}")
+                                    if inv.get('referral'):
+                                        st.write(f"**轉介**: {inv.get('referral', '')}")
+                        else:
+                            st.info("此病人尚無介入紀錄")
+            else:
+                st.info("尚無病人資料")
+                
+        except Exception as e:
+            st.error(f"載入追蹤歷程失敗: {e}")
+    
+    # === 病人設定（修正版）===
+    with tab3:
         st.subheader("⚙️ 設定病人資料")
         
         try:
@@ -495,10 +662,18 @@ def render_interventions():
             st.error(f"載入資料失敗: {e}")
 
 # ============================================
-# 報表統計
+# 報表統計（進階版）
 # ============================================
 def render_reports():
     """報表統計"""
+    try:
+        from reports_module import render_advanced_reports
+        render_advanced_reports(get_all_patients, get_all_reports, get_interventions, get_education_pushes)
+    except ImportError:
+        # 如果模組不存在，使用簡化版
+        render_simple_reports()
+def render_simple_reports():
+    """簡化版報表統計"""
     st.title("📈 報表統計")
     
     if not GSHEETS_AVAILABLE:
