@@ -669,9 +669,14 @@ def render_reports():
     try:
         from reports_module import render_advanced_reports
         render_advanced_reports(get_all_patients, get_all_reports, get_interventions, get_education_pushes)
-    except ImportError:
-        # 如果模組不存在，使用簡化版
+    except ImportError as e:
+        st.warning(f"進階報表模組未載入: {e}")
+        st.info("請確認 reports_module.py 已上傳到 GitHub")
         render_simple_reports()
+    except Exception as e:
+        st.error(f"報表載入錯誤: {e}")
+        render_simple_reports()
+
 def render_simple_reports():
     """簡化版報表統計"""
     st.title("📈 報表統計")
