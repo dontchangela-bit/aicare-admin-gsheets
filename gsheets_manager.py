@@ -26,17 +26,57 @@ CACHE_TTL = 60  # 快取時間：60 秒
 # ============================================
 
 PATIENT_COLUMNS = [
-    "patient_id", "name", "phone", "password", "age", "gender",
-    "surgery_type", "surgery_date", "diagnosis", "medical_record",
-    "status", "post_op_day",
-    "consent_agreed", "consent_time", "registered_at",
-    "clinical_data", "notes"
+    "patient_id", "name", "phone", "password", "birth_date", "age", "gender",
+    "id_number", "emergency_contact", "emergency_phone",
+    # 診斷資訊
+    "diagnosis", "pathology", "clinical_stage", "pathological_stage", 
+    "tumor_location", "tumor_size", "histology_type",
+    # 手術資訊
+    "surgery_type", "surgery_date", "surgery_approach", "resection_extent",
+    "lymph_node_dissection", "surgical_margin", "complications",
+    # 治療資訊
+    "adjuvant_chemo", "adjuvant_radio", "target_therapy", "immunotherapy",
+    "treatment_status", "treatment_notes",
+    # 共病症與風險
+    "comorbidities", "smoking_history", "risk_level",
+    # 功能狀態
+    "ecog_ps", "kps_score",
+    # 系統欄位
+    "status", "post_op_day", "consent_agreed", "consent_time", "registered_at",
+    "notes"
+]
+
+# 追蹤排程欄位
+SCHEDULE_COLUMNS = [
+    "schedule_id", "patient_id", "patient_name", "schedule_type",
+    "scheduled_date", "scheduled_time", "location", "provider",
+    "reminder_sent", "status", "result", "notes", "created_by", "created_at"
+]
+
+# 檢查結果欄位
+LAB_COLUMNS = [
+    "lab_id", "patient_id", "patient_name", "test_date", "test_type",
+    "cea", "cyfra211", "scc", "nse", "other_markers",
+    "wbc", "hgb", "plt", "creatinine", "ast", "alt",
+    "imaging_type", "imaging_result", "imaging_comparison",
+    "notes", "created_by"
+]
+
+# 功能狀態追蹤欄位
+FUNCTIONAL_COLUMNS = [
+    "assessment_id", "patient_id", "patient_name", "assessment_date",
+    "ecog_ps", "kps_score", 
+    "physical_function", "role_function", "emotional_function",
+    "cognitive_function", "social_function", "global_qol",
+    "notes", "created_by"
 ]
 
 REPORT_COLUMNS = [
     "report_id", "patient_id", "patient_name", "date", "timestamp",
     "overall_score", "symptoms", "messages_count",
-    "alert_level", "alert_handled", "handled_by", "handled_at"
+    "conversation", "ai_summary",
+    "alert_level", "alert_handled", "handled_by", "handled_time",
+    "handling_action", "handling_notes"
 ]
 
 EDUCATION_COLUMNS = [
@@ -47,7 +87,17 @@ EDUCATION_COLUMNS = [
 
 INTERVENTION_COLUMNS = [
     "intervention_id", "patient_id", "patient_name", "date", "timestamp",
-    "method", "duration", "content", "referral", "created_by"
+    "intervention_type", "intervention_category", "method", "duration", 
+    "problem_addressed", "content", "pre_symptom_score", "post_symptom_score",
+    "outcome", "satisfaction", "referral", "referral_status", "follow_up_date",
+    "created_by", "notes"
+]
+
+# 問題清單欄位
+PROBLEM_COLUMNS = [
+    "problem_id", "patient_id", "patient_name", "identified_date",
+    "problem_category", "problem_description", "severity", "status",
+    "goal", "target_date", "resolved_date", "created_by", "notes"
 ]
 
 # ============================================
@@ -368,8 +418,8 @@ def get_pending_alerts():
     reports = get_all_reports()
     return [r for r in reports if r.get("alert_level") in ["red", "yellow"] and r.get("alert_handled") != "Y"]
 
-def handle_alert(report_id, handler):
-    """處理警示"""
+def handle_alert(report_id, handler, handling_action="", handling_notes=""):
+    """處理警示（增強版）"""
     spreadsheet = get_spreadsheet()
     if not spreadsheet:
         return False
@@ -381,9 +431,18 @@ def handle_alert(report_id, handler):
         for idx, record in enumerate(records):
             if record.get("report_id") == report_id:
                 row_num = idx + 2
+                
+                # 更新處理狀態
                 worksheet.update_cell(row_num, REPORT_COLUMNS.index("alert_handled") + 1, "Y")
                 worksheet.update_cell(row_num, REPORT_COLUMNS.index("handled_by") + 1, handler)
-                worksheet.update_cell(row_num, REPORT_COLUMNS.index("handled_at") + 1, datetime.now().isoformat())
+                worksheet.update_cell(row_num, REPORT_COLUMNS.index("handled_time") + 1, datetime.now().isoformat())
+                
+                # 更新處理方式和備註
+                if handling_action:
+                    worksheet.update_cell(row_num, REPORT_COLUMNS.index("handling_action") + 1, handling_action)
+                if handling_notes:
+                    worksheet.update_cell(row_num, REPORT_COLUMNS.index("handling_notes") + 1, handling_notes)
+                
                 clear_cache()
                 return True
         return False
@@ -514,11 +573,21 @@ def save_intervention(intervention_data):
             intervention_data.get("patient_name", ""),
             intervention_data.get("date", datetime.now().strftime("%Y-%m-%d")),
             intervention_data.get("timestamp", datetime.now().isoformat()),
+            intervention_data.get("intervention_type", ""),
+            intervention_data.get("intervention_category", ""),
             intervention_data.get("method", ""),
             intervention_data.get("duration", ""),
+            intervention_data.get("problem_addressed", ""),
             intervention_data.get("content", ""),
+            intervention_data.get("pre_symptom_score", ""),
+            intervention_data.get("post_symptom_score", ""),
+            intervention_data.get("outcome", ""),
+            intervention_data.get("satisfaction", ""),
             intervention_data.get("referral", ""),
-            intervention_data.get("created_by", "")
+            intervention_data.get("referral_status", ""),
+            intervention_data.get("follow_up_date", ""),
+            intervention_data.get("created_by", ""),
+            intervention_data.get("notes", "")
         ]
         
         worksheet.append_row(row)
@@ -526,6 +595,330 @@ def save_intervention(intervention_data):
         return intervention_id
     except Exception as e:
         st.error(f"儲存介入紀錄失敗: {e}")
+        return None
+
+# ============================================
+# 問題清單管理
+# ============================================
+
+@st.cache_data(ttl=CACHE_TTL)
+def get_problems_cached(patient_id=None):
+    """取得問題清單（快取版）"""
+    spreadsheet = get_spreadsheet()
+    if not spreadsheet:
+        return []
+    
+    try:
+        worksheet = get_or_create_worksheet(spreadsheet, "Problems", PROBLEM_COLUMNS)
+        records = worksheet.get_all_records()
+        
+        if patient_id:
+            return [r for r in records if r.get("patient_id") == patient_id]
+        return records
+    except Exception as e:
+        return []
+
+def get_problems(patient_id=None):
+    """取得問題清單（外部呼叫介面）"""
+    return get_problems_cached(patient_id)
+
+def save_problem(problem_data):
+    """儲存問題"""
+    spreadsheet = get_spreadsheet()
+    if not spreadsheet:
+        return None
+    
+    try:
+        worksheet = get_or_create_worksheet(spreadsheet, "Problems", PROBLEM_COLUMNS)
+        
+        problem_id = f"PR{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        
+        row = [
+            problem_id,
+            problem_data.get("patient_id", ""),
+            problem_data.get("patient_name", ""),
+            problem_data.get("identified_date", datetime.now().strftime("%Y-%m-%d")),
+            problem_data.get("problem_category", ""),
+            problem_data.get("problem_description", ""),
+            problem_data.get("severity", ""),
+            problem_data.get("status", "active"),
+            problem_data.get("goal", ""),
+            problem_data.get("target_date", ""),
+            "",  # resolved_date
+            problem_data.get("created_by", ""),
+            problem_data.get("notes", "")
+        ]
+        
+        worksheet.append_row(row)
+        clear_cache()
+        return problem_id
+    except Exception as e:
+        st.error(f"儲存問題失敗: {e}")
+        return None
+
+def update_problem(problem_id, updates):
+    """更新問題狀態"""
+    spreadsheet = get_spreadsheet()
+    if not spreadsheet:
+        return False
+    
+    try:
+        worksheet = get_or_create_worksheet(spreadsheet, "Problems", PROBLEM_COLUMNS)
+        records = worksheet.get_all_records()
+        
+        for idx, record in enumerate(records):
+            if record.get("problem_id") == problem_id:
+                row_num = idx + 2
+                
+                for key, value in updates.items():
+                    if key in PROBLEM_COLUMNS:
+                        col_num = PROBLEM_COLUMNS.index(key) + 1
+                        worksheet.update_cell(row_num, col_num, value)
+                
+                clear_cache()
+                return True
+        return False
+    except Exception as e:
+        st.error(f"更新問題失敗: {e}")
+        return False
+
+def update_intervention(intervention_id, updates):
+    """更新介入紀錄"""
+    spreadsheet = get_spreadsheet()
+    if not spreadsheet:
+        return False
+    
+    try:
+        worksheet = get_or_create_worksheet(spreadsheet, "Interventions", INTERVENTION_COLUMNS)
+        records = worksheet.get_all_records()
+        
+        for idx, record in enumerate(records):
+            if record.get("intervention_id") == intervention_id:
+                row_num = idx + 2
+                
+                for key, value in updates.items():
+                    if key in INTERVENTION_COLUMNS:
+                        col_num = INTERVENTION_COLUMNS.index(key) + 1
+                        worksheet.update_cell(row_num, col_num, value)
+                
+                clear_cache()
+                return True
+        return False
+    except Exception as e:
+        st.error(f"更新介入紀錄失敗: {e}")
+        return False
+
+# ============================================
+# 追蹤排程管理
+# ============================================
+
+@st.cache_data(ttl=CACHE_TTL)
+def get_schedules_cached(patient_id=None):
+    """取得追蹤排程（快取版）"""
+    spreadsheet = get_spreadsheet()
+    if not spreadsheet:
+        return []
+    
+    try:
+        worksheet = get_or_create_worksheet(spreadsheet, "Schedules", SCHEDULE_COLUMNS)
+        records = worksheet.get_all_records()
+        
+        if patient_id:
+            return [r for r in records if r.get("patient_id") == patient_id]
+        return records
+    except Exception as e:
+        return []
+
+def get_schedules(patient_id=None):
+    """取得追蹤排程（外部呼叫介面）"""
+    return get_schedules_cached(patient_id)
+
+def save_schedule(schedule_data):
+    """儲存追蹤排程"""
+    spreadsheet = get_spreadsheet()
+    if not spreadsheet:
+        return None
+    
+    try:
+        worksheet = get_or_create_worksheet(spreadsheet, "Schedules", SCHEDULE_COLUMNS)
+        
+        schedule_id = f"SCH{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        
+        row = [
+            schedule_id,
+            schedule_data.get("patient_id", ""),
+            schedule_data.get("patient_name", ""),
+            schedule_data.get("schedule_type", ""),
+            schedule_data.get("scheduled_date", ""),
+            schedule_data.get("scheduled_time", ""),
+            schedule_data.get("location", ""),
+            schedule_data.get("provider", ""),
+            "N",  # reminder_sent
+            schedule_data.get("status", "scheduled"),
+            "",  # result
+            schedule_data.get("notes", ""),
+            schedule_data.get("created_by", ""),
+            datetime.now().isoformat()
+        ]
+        
+        worksheet.append_row(row)
+        clear_cache()
+        return schedule_id
+    except Exception as e:
+        st.error(f"儲存排程失敗: {e}")
+        return None
+
+def update_schedule(schedule_id, updates):
+    """更新排程狀態"""
+    spreadsheet = get_spreadsheet()
+    if not spreadsheet:
+        return False
+    
+    try:
+        worksheet = get_or_create_worksheet(spreadsheet, "Schedules", SCHEDULE_COLUMNS)
+        records = worksheet.get_all_records()
+        
+        for idx, record in enumerate(records):
+            if record.get("schedule_id") == schedule_id:
+                row_num = idx + 2
+                
+                for key, value in updates.items():
+                    if key in SCHEDULE_COLUMNS:
+                        col_num = SCHEDULE_COLUMNS.index(key) + 1
+                        worksheet.update_cell(row_num, col_num, value)
+                
+                clear_cache()
+                return True
+        return False
+    except Exception as e:
+        st.error(f"更新排程失敗: {e}")
+        return False
+
+# ============================================
+# 檢查結果管理
+# ============================================
+
+@st.cache_data(ttl=CACHE_TTL)
+def get_lab_results_cached(patient_id=None):
+    """取得檢查結果（快取版）"""
+    spreadsheet = get_spreadsheet()
+    if not spreadsheet:
+        return []
+    
+    try:
+        worksheet = get_or_create_worksheet(spreadsheet, "LabResults", LAB_COLUMNS)
+        records = worksheet.get_all_records()
+        
+        if patient_id:
+            return [r for r in records if r.get("patient_id") == patient_id]
+        return records
+    except Exception as e:
+        return []
+
+def get_lab_results(patient_id=None):
+    """取得檢查結果（外部呼叫介面）"""
+    return get_lab_results_cached(patient_id)
+
+def save_lab_result(lab_data):
+    """儲存檢查結果"""
+    spreadsheet = get_spreadsheet()
+    if not spreadsheet:
+        return None
+    
+    try:
+        worksheet = get_or_create_worksheet(spreadsheet, "LabResults", LAB_COLUMNS)
+        
+        lab_id = f"LAB{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        
+        row = [
+            lab_id,
+            lab_data.get("patient_id", ""),
+            lab_data.get("patient_name", ""),
+            lab_data.get("test_date", ""),
+            lab_data.get("test_type", ""),
+            lab_data.get("cea", ""),
+            lab_data.get("cyfra211", ""),
+            lab_data.get("scc", ""),
+            lab_data.get("nse", ""),
+            lab_data.get("other_markers", ""),
+            lab_data.get("wbc", ""),
+            lab_data.get("hgb", ""),
+            lab_data.get("plt", ""),
+            lab_data.get("creatinine", ""),
+            lab_data.get("ast", ""),
+            lab_data.get("alt", ""),
+            lab_data.get("imaging_type", ""),
+            lab_data.get("imaging_result", ""),
+            lab_data.get("imaging_comparison", ""),
+            lab_data.get("notes", ""),
+            lab_data.get("created_by", "")
+        ]
+        
+        worksheet.append_row(row)
+        clear_cache()
+        return lab_id
+    except Exception as e:
+        st.error(f"儲存檢查結果失敗: {e}")
+        return None
+
+# ============================================
+# 功能狀態追蹤
+# ============================================
+
+@st.cache_data(ttl=CACHE_TTL)
+def get_functional_assessments_cached(patient_id=None):
+    """取得功能狀態評估（快取版）"""
+    spreadsheet = get_spreadsheet()
+    if not spreadsheet:
+        return []
+    
+    try:
+        worksheet = get_or_create_worksheet(spreadsheet, "FunctionalAssessments", FUNCTIONAL_COLUMNS)
+        records = worksheet.get_all_records()
+        
+        if patient_id:
+            return [r for r in records if r.get("patient_id") == patient_id]
+        return records
+    except Exception as e:
+        return []
+
+def get_functional_assessments(patient_id=None):
+    """取得功能狀態評估（外部呼叫介面）"""
+    return get_functional_assessments_cached(patient_id)
+
+def save_functional_assessment(assessment_data):
+    """儲存功能狀態評估"""
+    spreadsheet = get_spreadsheet()
+    if not spreadsheet:
+        return None
+    
+    try:
+        worksheet = get_or_create_worksheet(spreadsheet, "FunctionalAssessments", FUNCTIONAL_COLUMNS)
+        
+        assessment_id = f"FA{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        
+        row = [
+            assessment_id,
+            assessment_data.get("patient_id", ""),
+            assessment_data.get("patient_name", ""),
+            assessment_data.get("assessment_date", datetime.now().strftime("%Y-%m-%d")),
+            assessment_data.get("ecog_ps", ""),
+            assessment_data.get("kps_score", ""),
+            assessment_data.get("physical_function", ""),
+            assessment_data.get("role_function", ""),
+            assessment_data.get("emotional_function", ""),
+            assessment_data.get("cognitive_function", ""),
+            assessment_data.get("social_function", ""),
+            assessment_data.get("global_qol", ""),
+            assessment_data.get("notes", ""),
+            assessment_data.get("created_by", "")
+        ]
+        
+        worksheet.append_row(row)
+        clear_cache()
+        return assessment_id
+    except Exception as e:
+        st.error(f"儲存功能評估失敗: {e}")
         return None
 
 # ============================================

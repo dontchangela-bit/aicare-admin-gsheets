@@ -11,8 +11,9 @@ AI-CARE Lung - 報表統計模組
 3. 警示統計 (Alert Analytics)
 4. 回報依從性 (Adherence Rate)
 5. 症狀熱力圖 (Symptom Heatmap)
-6. 病人分群分析 (Cohort Analysis)
-7. 個管師工作量 (Workload Analytics)
+6. AI vs 問卷對照分析 (AI vs Questionnaire)
+7. 病人分群分析 (Cohort Analysis)
+8. 個管師工作量 (Workload Analytics)
 """
 
 import streamlit as st
@@ -22,6 +23,13 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import json
+
+# 嘗試載入 scipy（統計分析用）
+try:
+    from scipy import stats
+    SCIPY_AVAILABLE = True
+except:
+    SCIPY_AVAILABLE = False
 
 def render_advanced_reports(get_all_patients, get_all_reports, get_interventions, get_education_pushes):
     """進階報表統計頁面"""
@@ -52,6 +60,8 @@ def render_advanced_reports(get_all_patients, get_all_reports, get_interventions
             "✅ 回報依從性分析",
             "🌡️ 症狀熱力圖",
             "📚 衛教統計分析",
+            "📝 介入成效分析",
+            "🤖 AI vs 問卷對照分析",
             "👥 病人分群分析",
             "👩‍⚕️ 個管師工作量",
             "📥 資料匯出"
@@ -72,6 +82,10 @@ def render_advanced_reports(get_all_patients, get_all_reports, get_interventions
         render_symptom_heatmap(patients, reports)
     elif report_type == "📚 衛教統計分析":
         render_education_analytics(patients, get_education_pushes)
+    elif report_type == "📝 介入成效分析":
+        render_intervention_analytics(interventions)
+    elif report_type == "🤖 AI vs 問卷對照分析":
+        render_ai_vs_questionnaire_analysis(patients, reports)
     elif report_type == "👥 病人分群分析":
         render_cohort_analysis(patients, reports)
     elif report_type == "👩‍⚕️ 個管師工作量":
@@ -81,54 +95,75 @@ def render_advanced_reports(get_all_patients, get_all_reports, get_interventions
 
 
 def render_overview_dashboard(patients, reports, interventions):
-    """總覽儀表板"""
+    """總覽儀表板（研究級）"""
     st.subheader("📊 總覽儀表板")
     
-    # === KPI 指標卡片 ===
-    col1, col2, col3, col4 = st.columns(4)
+    st.markdown("""
+    <div style="background-color: #e8f5e9; padding: 15px; border-radius: 10px; margin-bottom: 20px;">
+    <b>📊 AI-CARE Lung Trial 統計總覽</b><br>
+    本儀表板提供試驗執行狀態的即時監控，符合 GCP 與 IRB 報告要求。
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # === 核心 KPI（第一行）===
+    st.markdown("##### 🎯 核心指標")
+    col1, col2, col3, col4, col5 = st.columns(5)
+    
+    today = datetime.now().strftime("%Y-%m-%d")
     
     with col1:
+        active = len([p for p in patients if p.get("status") not in ["discharged", "withdrawn", "completed"]])
         st.metric(
-            "👥 總收案數",
-            len(patients),
-            delta=f"+{len([p for p in patients if p.get('post_op_day', 0) <= 7])} 本週新增"
+            "👥 收案中",
+            active,
+            delta=f"/ {len(patients)} 總數"
         )
     
     with col2:
-        today = datetime.now().strftime("%Y-%m-%d")
         today_reports = len([r for r in reports if r.get("date") == today])
         st.metric("📋 今日回報", today_reports)
     
     with col3:
         pending_alerts = len([r for r in reports if r.get("alert_level") in ["red", "yellow"] and r.get("alert_handled") != "Y"])
-        st.metric("⚠️ 待處理警示", pending_alerts)
+        st.metric("⚠️ 待處理警示", pending_alerts,
+                 delta="需處理" if pending_alerts > 0 else "✅",
+                 delta_color="inverse" if pending_alerts > 0 else "off")
     
     with col4:
-        if reports:
-            total_days = sum([p.get("post_op_day", 0) for p in patients])
-            adherence = len(reports) / max(total_days, 1) * 100
-            st.metric("✅ 整體依從率", f"{min(adherence, 100):.1f}%")
+        # 整體依從率計算（有回報天數 / 術後總天數）
+        if patients:
+            total_expected = sum([max(p.get("post_op_day", 0), 1) for p in patients if p.get("status") not in ["discharged", "withdrawn"]])
+            total_actual = len(reports)
+            adherence = min(total_actual / max(total_expected, 1) * 100, 100)
+            st.metric("✅ 整體依從率", f"{adherence:.1f}%",
+                     delta="達標" if adherence >= 75 else "待加強",
+                     delta_color="normal" if adherence >= 75 else "inverse")
         else:
             st.metric("✅ 整體依從率", "N/A")
     
+    with col5:
+        total_interventions = len(interventions)
+        st.metric("📝 總介入次數", total_interventions)
+    
     st.divider()
     
-    # === 病人狀態分布 ===
+    # === 試驗執行狀態（第二行）===
     col1, col2 = st.columns(2)
     
     with col1:
-        st.markdown("##### 📍 病人狀態分布")
+        st.markdown("##### 📍 收案狀態分布")
         status_counts = {}
+        status_labels = {
+            "hospitalized": "🏥 住院中",
+            "normal": "📍 追蹤中",
+            "active": "📍 追蹤中",
+            "pending_setup": "⏳ 待設定",
+            "discharged": "✅ 已出院",
+            "completed": "🎉 完成追蹤",
+            "withdrawn": "❌ 退出"
+        }
         for p in patients:
             status = p.get("status", "unknown")
-            status_labels = {
-                "hospitalized": "🏥 住院中",
-                "normal": "📍 追蹤中",
-                "active": "📍 追蹤中",
-                "pending_setup": "⏳ 待設定",
-                "discharged": "✅ 已出院",
-                "completed": "🎉 完成追蹤"
-            }
             label = status_labels.get(status, status)
             status_counts[label] = status_counts.get(label, 0) + 1
         
@@ -137,32 +172,190 @@ def render_overview_dashboard(patients, reports, interventions):
                 values=list(status_counts.values()),
                 names=list(status_counts.keys()),
                 hole=0.4,
-                color_discrete_sequence=px.colors.qualitative.Set3
+                color_discrete_sequence=px.colors.qualitative.Set2
             )
-            fig.update_layout(height=300, margin=dict(t=20, b=20, l=20, r=20))
+            fig.update_layout(height=280, margin=dict(t=20, b=20, l=20, r=20))
             st.plotly_chart(fig, use_container_width=True)
     
     with col2:
         st.markdown("##### 📅 術後天數分布")
         post_op_groups = {
-            "D+0~7 住院": 0,
-            "D+8~30 急性期": 0,
-            "D+31~90 恢復期": 0,
-            "D+91~180 穩定期": 0,
-            "D+181+ 長期追蹤": 0
+            "D+0~7": 0,
+            "D+8~30": 0,
+            "D+31~90": 0,
+            "D+91~180": 0,
+            "D+181+": 0
         }
         for p in patients:
             days = p.get("post_op_day", 0)
             if days <= 7:
-                post_op_groups["D+0~7 住院"] += 1
+                post_op_groups["D+0~7"] += 1
             elif days <= 30:
-                post_op_groups["D+8~30 急性期"] += 1
+                post_op_groups["D+8~30"] += 1
             elif days <= 90:
-                post_op_groups["D+31~90 恢復期"] += 1
+                post_op_groups["D+31~90"] += 1
             elif days <= 180:
-                post_op_groups["D+91~180 穩定期"] += 1
+                post_op_groups["D+91~180"] += 1
             else:
-                post_op_groups["D+181+ 長期追蹤"] += 1
+                post_op_groups["D+181+"] += 1
+        
+        if any(post_op_groups.values()):
+            fig = px.bar(
+                x=list(post_op_groups.keys()),
+                y=list(post_op_groups.values()),
+                color=list(post_op_groups.values()),
+                color_continuous_scale="Blues"
+            )
+            fig.update_layout(
+                height=280, 
+                margin=dict(t=20, b=20, l=20, r=20),
+                showlegend=False,
+                coloraxis_showscale=False,
+                xaxis_title="術後階段",
+                yaxis_title="人數"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+    
+    st.divider()
+    
+    # === 風險分層（第三行）===
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("##### 🎯 風險分層分布")
+        risk_counts = {"🔴 高風險": 0, "🟡 中風險": 0, "🟢 低風險": 0, "⚪ 未分類": 0}
+        for p in patients:
+            risk = p.get("risk_level", "")
+            if "高" in risk:
+                risk_counts["🔴 高風險"] += 1
+            elif "中" in risk:
+                risk_counts["🟡 中風險"] += 1
+            elif "低" in risk:
+                risk_counts["🟢 低風險"] += 1
+            else:
+                risk_counts["⚪ 未分類"] += 1
+        
+        risk_df = pd.DataFrame([
+            {"風險等級": k, "人數": v, "佔比": f"{v/len(patients)*100:.1f}%" if patients else "0%"}
+            for k, v in risk_counts.items() if v > 0
+        ])
+        st.dataframe(risk_df, hide_index=True, use_container_width=True)
+    
+    with col2:
+        st.markdown("##### 🏥 手術類型分布")
+        surgery_counts = {}
+        for p in patients:
+            surgery = p.get("surgery_type", "未記錄")
+            surgery_counts[surgery] = surgery_counts.get(surgery, 0) + 1
+        
+        if surgery_counts:
+            surgery_df = pd.DataFrame([
+                {"手術類型": k, "人數": v}
+                for k, v in sorted(surgery_counts.items(), key=lambda x: x[1], reverse=True)
+            ])
+            st.dataframe(surgery_df, hide_index=True, use_container_width=True)
+    
+    st.divider()
+    
+    # === 警示與依從性趨勢（第四行）===
+    st.markdown("##### 📈 趨勢分析（近 30 天）")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**警示等級趨勢**")
+        
+        daily_alerts = {}
+        for i in range(30):
+            date = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+            daily_alerts[date] = {"紅色": 0, "黃色": 0, "綠色": 0}
+        
+        for r in reports:
+            date = r.get("date", "")
+            if date in daily_alerts:
+                level = r.get("alert_level", "green")
+                if level == "red":
+                    daily_alerts[date]["紅色"] += 1
+                elif level == "yellow":
+                    daily_alerts[date]["黃色"] += 1
+                else:
+                    daily_alerts[date]["綠色"] += 1
+        
+        dates = sorted(daily_alerts.keys())
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=dates, y=[daily_alerts[d]["紅色"] for d in dates],
+            name="🔴 紅色", line=dict(color="#dc3545"), mode="lines"
+        ))
+        fig.add_trace(go.Scatter(
+            x=dates, y=[daily_alerts[d]["黃色"] for d in dates],
+            name="🟡 黃色", line=dict(color="#ffc107"), mode="lines"
+        ))
+        fig.add_trace(go.Scatter(
+            x=dates, y=[daily_alerts[d]["綠色"] for d in dates],
+            name="🟢 綠色", line=dict(color="#28a745"), mode="lines"
+        ))
+        fig.update_layout(height=280, margin=dict(t=30, b=20, l=20, r=20))
+        st.plotly_chart(fig, use_container_width=True)
+    
+    with col2:
+        st.markdown("**每週依從率趨勢**")
+        
+        # 計算每週依從率
+        weekly_adherence = {}
+        for i in range(8):  # 8 週
+            week_start = datetime.now() - timedelta(weeks=i+1)
+            week_end = datetime.now() - timedelta(weeks=i)
+            week_label = week_start.strftime("%m/%d")
+            
+            week_reports = len([r for r in reports 
+                               if week_start.strftime("%Y-%m-%d") <= r.get("date", "") < week_end.strftime("%Y-%m-%d")])
+            week_expected = len([p for p in patients if p.get("status") not in ["discharged"]]) * 7
+            
+            adherence = (week_reports / max(week_expected, 1)) * 100
+            weekly_adherence[week_label] = min(adherence, 100)
+        
+        if weekly_adherence:
+            weeks = list(reversed(list(weekly_adherence.keys())))
+            values = [weekly_adherence[w] for w in weeks]
+            
+            fig = go.Figure()
+            fig.add_trace(go.Bar(
+                x=weeks, y=values,
+                marker_color=["#28a745" if v >= 75 else "#ffc107" if v >= 50 else "#dc3545" for v in values]
+            ))
+            fig.add_hline(y=75, line_dash="dash", line_color="green", annotation_text="目標 75%")
+            fig.update_layout(height=280, margin=dict(t=30, b=20, l=20, r=20), yaxis=dict(range=[0, 100]))
+            st.plotly_chart(fig, use_container_width=True)
+    
+    st.divider()
+    
+    # === 研究摘要統計（第五行）===
+    st.markdown("##### 📋 研究摘要統計")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("**收案統計**")
+        st.write(f"• 總收案數: {len(patients)}")
+        st.write(f"• 追蹤中: {len([p for p in patients if p.get('status') in ['normal', 'active', 'hospitalized']])}")
+        st.write(f"• 完成追蹤: {len([p for p in patients if p.get('status') == 'completed'])}")
+        st.write(f"• 退出/失訪: {len([p for p in patients if p.get('status') in ['withdrawn', 'lost']])}")
+    
+    with col2:
+        st.markdown("**回報統計**")
+        st.write(f"• 總回報數: {len(reports)}")
+        st.write(f"• 紅色警示: {len([r for r in reports if r.get('alert_level') == 'red'])}")
+        st.write(f"• 黃色警示: {len([r for r in reports if r.get('alert_level') == 'yellow'])}")
+        st.write(f"• AI 摘要數: {len([r for r in reports if r.get('ai_summary')])}")
+    
+    with col3:
+        st.markdown("**介入統計**")
+        st.write(f"• 總介入次數: {len(interventions)}")
+        improved = len([i for i in interventions if i.get("outcome") in ["改善", "部分改善"]])
+        st.write(f"• 改善率: {improved/len(interventions)*100:.1f}%" if interventions else "• 改善率: N/A")
+        total_duration = sum([int(i.get("duration", 0)) for i in interventions if str(i.get("duration", "0")).isdigit()])
+        st.write(f"• 總介入時數: {total_duration/60:.1f} 小時")
         
         fig = px.bar(
             x=list(post_op_groups.keys()),
@@ -791,6 +984,720 @@ def render_education_analytics(patients, get_education_pushes):
                 st.write(f"- {p.get('name', '未知')} ({p.get('patient_id')}) - D+{p.get('post_op_day', 0)}")
 
 
+def render_intervention_analytics(interventions):
+    """介入成效分析"""
+    st.subheader("📝 介入成效分析")
+    
+    if not interventions:
+        st.info("尚無介入紀錄")
+        return
+    
+    # === KPI ===
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("📝 總介入次數", len(interventions))
+    
+    with col2:
+        improved = len([i for i in interventions if i.get("outcome") in ["改善", "部分改善"]])
+        improve_rate = improved / len(interventions) * 100 if interventions else 0
+        st.metric("✅ 改善率", f"{improve_rate:.1f}%")
+    
+    with col3:
+        total_duration = sum([int(i.get("duration", 0)) for i in interventions if str(i.get("duration", "0")).isdigit()])
+        avg_duration = total_duration / len(interventions) if interventions else 0
+        st.metric("⏱️ 平均時長", f"{avg_duration:.1f} 分鐘")
+    
+    with col4:
+        referrals = len([i for i in interventions if i.get("referral")])
+        st.metric("🔄 轉介次數", referrals)
+    
+    st.divider()
+    
+    # === 各類別介入成效 ===
+    st.markdown("##### 📊 各類別介入成效")
+    
+    category_stats = {}
+    for inv in interventions:
+        cat = inv.get("intervention_category", "未分類")
+        if cat not in category_stats:
+            category_stats[cat] = {"總數": 0, "改善": 0, "部分改善": 0, "無變化": 0, "惡化": 0}
+        category_stats[cat]["總數"] += 1
+        outcome = inv.get("outcome", "")
+        if outcome in category_stats[cat]:
+            category_stats[cat][outcome] += 1
+    
+    cat_df = pd.DataFrame([
+        {
+            "類別": k,
+            "總數": v["總數"],
+            "改善": v["改善"],
+            "部分改善": v["部分改善"],
+            "無變化": v["無變化"],
+            "惡化": v["惡化"],
+            "改善率": f"{(v['改善'] + v['部分改善']) / v['總數'] * 100:.1f}%" if v["總數"] > 0 else "0%"
+        }
+        for k, v in category_stats.items()
+    ])
+    
+    if not cat_df.empty:
+        st.dataframe(cat_df, hide_index=True, use_container_width=True)
+    
+    # === 圖表 ===
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("##### 📂 介入類別分布")
+        if category_stats:
+            fig = px.pie(
+                values=[v["總數"] for v in category_stats.values()],
+                names=list(category_stats.keys()),
+                hole=0.4
+            )
+            fig.update_layout(height=300)
+            st.plotly_chart(fig, use_container_width=True)
+    
+    with col2:
+        st.markdown("##### 📈 成效分布")
+        outcome_counts = {}
+        for inv in interventions:
+            outcome = inv.get("outcome", "未記錄")
+            outcome_counts[outcome] = outcome_counts.get(outcome, 0) + 1
+        
+        if outcome_counts:
+            fig = px.bar(
+                x=list(outcome_counts.keys()),
+                y=list(outcome_counts.values()),
+                color=list(outcome_counts.keys()),
+                color_discrete_map={
+                    "改善": "#28a745", "部分改善": "#90EE90",
+                    "無變化": "#6c757d", "惡化": "#dc3545", "待評估": "#ffc107"
+                }
+            )
+            fig.update_layout(height=300, showlegend=False, xaxis_title="", yaxis_title="次數")
+            st.plotly_chart(fig, use_container_width=True)
+    
+    # === 症狀評分變化分析 ===
+    st.markdown("##### 📉 介入前後症狀評分變化")
+    
+    score_data = []
+    for inv in interventions:
+        pre = inv.get("pre_symptom_score", "")
+        post = inv.get("post_symptom_score", "")
+        if str(pre).isdigit() and str(post).isdigit():
+            score_data.append({
+                "類別": inv.get("intervention_category", ""),
+                "介入前": int(pre),
+                "介入後": int(post),
+                "變化": int(post) - int(pre)
+            })
+    
+    if score_data:
+        score_df = pd.DataFrame(score_data)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # 整體平均
+            avg_pre = score_df["介入前"].mean()
+            avg_post = score_df["介入後"].mean()
+            avg_change = score_df["變化"].mean()
+            
+            st.metric("整體平均介入前", f"{avg_pre:.1f}")
+            st.metric("整體平均介入後", f"{avg_post:.1f}", delta=f"{avg_change:.1f}")
+        
+        with col2:
+            # 各類別平均變化
+            category_change = score_df.groupby("類別")["變化"].mean().reset_index()
+            category_change.columns = ["類別", "平均變化"]
+            category_change["平均變化"] = category_change["平均變化"].round(2)
+            st.dataframe(category_change, hide_index=True)
+        
+        st.caption("💡 負值表示症狀改善（分數降低）")
+    
+    # === 轉介分析 ===
+    st.markdown("##### 🔄 轉介統計")
+    
+    referral_stats = {}
+    for inv in interventions:
+        ref = inv.get("referral", "")
+        if ref:
+            referral_stats[ref] = referral_stats.get(ref, 0) + 1
+    
+    if referral_stats:
+        ref_df = pd.DataFrame([
+            {"轉介單位": k, "次數": v}
+            for k, v in sorted(referral_stats.items(), key=lambda x: x[1], reverse=True)
+        ])
+        st.dataframe(ref_df, hide_index=True)
+    else:
+        st.info("尚無轉介紀錄")
+    
+    # === 滿意度分析 ===
+    st.markdown("##### 😊 病人滿意度分析")
+    
+    satisfaction_stats = {}
+    for inv in interventions:
+        sat = inv.get("satisfaction", "")
+        if sat:
+            satisfaction_stats[sat] = satisfaction_stats.get(sat, 0) + 1
+    
+    if satisfaction_stats:
+        sat_order = ["非常不滿意", "不滿意", "普通", "滿意", "非常滿意"]
+        sat_df = pd.DataFrame([
+            {"滿意度": k, "次數": satisfaction_stats.get(k, 0)}
+            for k in sat_order if k in satisfaction_stats
+        ])
+        
+        fig = px.bar(sat_df, x="滿意度", y="次數", color="滿意度",
+                     color_discrete_map={"非常不滿意": "#dc3545", "不滿意": "#fd7e14",
+                                        "普通": "#ffc107", "滿意": "#90EE90", "非常滿意": "#28a745"})
+        fig.update_layout(height=300, showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
+
+
+# ============================================
+# AI vs 問卷對照分析
+# ============================================
+
+# MDASI-LC 症狀項目對照
+MDASI_LC_ITEMS = {
+    "core_symptoms": {
+        "pain": {"name": "疼痛", "mdasi_item": "1. 疼痛程度"},
+        "fatigue": {"name": "疲勞", "mdasi_item": "2. 疲勞程度"},
+        "nausea": {"name": "噁心", "mdasi_item": "3. 噁心程度"},
+        "sleep": {"name": "睡眠障礙", "mdasi_item": "4. 睡眠障礙"},
+        "distress": {"name": "情緒困擾", "mdasi_item": "5. 情緒困擾"},
+        "dyspnea": {"name": "呼吸困難", "mdasi_item": "6. 呼吸困難"},
+        "memory": {"name": "記憶困難", "mdasi_item": "7. 記憶困難"},
+        "appetite": {"name": "食慾不振", "mdasi_item": "8. 食慾不振"},
+        "drowsy": {"name": "嗜睡", "mdasi_item": "9. 嗜睡程度"},
+        "dry_mouth": {"name": "口乾", "mdasi_item": "10. 口乾程度"},
+        "sad": {"name": "悲傷", "mdasi_item": "11. 悲傷程度"},
+        "vomiting": {"name": "嘔吐", "mdasi_item": "12. 嘔吐程度"},
+        "numbness": {"name": "麻木", "mdasi_item": "13. 麻木程度"}
+    },
+    "lung_specific": {
+        "cough": {"name": "咳嗽", "mdasi_item": "LC1. 咳嗽程度"},
+        "constipation": {"name": "便秘", "mdasi_item": "LC2. 便秘程度"},
+        "sore_throat": {"name": "喉嚨痛", "mdasi_item": "LC3. 喉嚨痛"},
+        "chest_tightness": {"name": "胸悶", "mdasi_item": "LC4. 胸悶程度"}
+    },
+    "interference": {
+        "activity": {"name": "日常活動", "mdasi_item": "I1. 日常活動干擾"},
+        "mood": {"name": "情緒", "mdasi_item": "I2. 情緒干擾"},
+        "work": {"name": "工作", "mdasi_item": "I3. 工作干擾"},
+        "relations": {"name": "人際關係", "mdasi_item": "I4. 人際關係干擾"},
+        "walking": {"name": "行走", "mdasi_item": "I5. 行走干擾"},
+        "enjoyment": {"name": "生活樂趣", "mdasi_item": "I6. 生活樂趣干擾"}
+    }
+}
+
+def render_ai_vs_questionnaire_analysis(patients, reports):
+    """AI vs 問卷對照分析"""
+    st.subheader("🤖 AI 對話 vs MDASI-LC 問卷對照分析")
+    
+    st.markdown("""
+    <div style="background-color: #e7f3ff; padding: 15px; border-radius: 10px; margin-bottom: 20px;">
+    <h4>📊 研究目的</h4>
+    <p>比較 <b>AI 對話式 PRO</b> 與 <b>傳統 MDASI-LC 問卷</b> 的一致性，評估 AI 對話是否能有效捕捉病人症狀。</p>
+    <ul>
+    <li><b>傳統問卷</b>：結構化數值評分（0-10分）</li>
+    <li><b>AI 對話</b>：自然語言對話 + AI 摘要提取分數</li>
+    </ul>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    if not reports:
+        st.warning("尚無回報資料")
+        return
+    
+    # === 標籤頁 ===
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📈 趨勢對照", 
+        "🔬 相關性分析",
+        "📊 Bland-Altman 圖",
+        "📋 詳細比較"
+    ])
+    
+    # === 趨勢對照 ===
+    with tab1:
+        render_trend_comparison(patients, reports)
+    
+    # === 相關性分析 ===
+    with tab2:
+        render_correlation_analysis(reports)
+    
+    # === Bland-Altman 圖 ===
+    with tab3:
+        render_bland_altman(reports)
+    
+    # === 詳細比較 ===
+    with tab4:
+        render_detailed_comparison(patients, reports)
+
+
+def render_trend_comparison(patients, reports):
+    """趨勢對照圖"""
+    st.markdown("##### 📈 症狀趨勢對照圖")
+    
+    # 選擇病人
+    patient_options = {f"{p.get('name', '')} ({p.get('patient_id', '')})": p for p in patients}
+    selected = st.selectbox("選擇病人", list(patient_options.keys()), key="trend_patient")
+    patient = patient_options.get(selected, {})
+    
+    if not patient:
+        return
+    
+    # 取得該病人的回報
+    patient_reports = [r for r in reports if r.get("patient_id") == patient.get("patient_id")]
+    patient_reports = sorted(patient_reports, key=lambda x: x.get("date", ""))
+    
+    if not patient_reports:
+        st.info("此病人尚無回報資料")
+        return
+    
+    # 選擇症狀
+    symptom_options = ["pain", "dyspnea", "cough", "fatigue", "sleep", "appetite", "mood"]
+    symptom_names = {
+        "pain": "疼痛", "dyspnea": "呼吸困難", "cough": "咳嗽",
+        "fatigue": "疲勞", "sleep": "睡眠", "appetite": "食慾", "mood": "情緒"
+    }
+    
+    selected_symptom = st.selectbox(
+        "選擇症狀",
+        symptom_options,
+        format_func=lambda x: symptom_names.get(x, x)
+    )
+    
+    # 準備資料
+    chart_data = []
+    for r in patient_reports:
+        date = r.get("date", "")
+        
+        # 問卷分數
+        symptoms_str = r.get("symptoms", "{}")
+        try:
+            symptoms = json.loads(symptoms_str) if isinstance(symptoms_str, str) else symptoms_str
+            questionnaire_score = symptoms.get(selected_symptom, None)
+            if questionnaire_score is not None:
+                questionnaire_score = float(questionnaire_score)
+        except:
+            questionnaire_score = None
+        
+        # AI 摘要提取分數（從 ai_summary 解析）
+        ai_summary = r.get("ai_summary", "")
+        ai_score = extract_score_from_summary(ai_summary, selected_symptom)
+        
+        # 整體分數
+        overall_score = r.get("overall_score", None)
+        
+        chart_data.append({
+            "日期": date,
+            "問卷分數": questionnaire_score,
+            "AI提取分數": ai_score,
+            "整體評分": overall_score
+        })
+    
+    df = pd.DataFrame(chart_data)
+    
+    # 繪製對照圖
+    st.markdown(f"**{symptom_names.get(selected_symptom, selected_symptom)} 趨勢對照**")
+    
+    fig = go.Figure()
+    
+    # 問卷分數線
+    if df["問卷分數"].notna().any():
+        fig.add_trace(go.Scatter(
+            x=df["日期"],
+            y=df["問卷分數"],
+            mode='lines+markers',
+            name='MDASI 問卷分數',
+            line=dict(color='#2196F3', width=2),
+            marker=dict(size=8)
+        ))
+    
+    # AI 提取分數線
+    if df["AI提取分數"].notna().any():
+        fig.add_trace(go.Scatter(
+            x=df["日期"],
+            y=df["AI提取分數"],
+            mode='lines+markers',
+            name='AI 對話提取分數',
+            line=dict(color='#FF9800', width=2, dash='dash'),
+            marker=dict(size=8, symbol='diamond')
+        ))
+    
+    # 整體評分線
+    fig.add_trace(go.Scatter(
+        x=df["日期"],
+        y=df["整體評分"],
+        mode='lines+markers',
+        name='整體評分',
+        line=dict(color='#9C27B0', width=1),
+        marker=dict(size=6),
+        opacity=0.5
+    ))
+    
+    fig.update_layout(
+        height=400,
+        xaxis_title="日期",
+        yaxis_title="分數 (0-10)",
+        yaxis=dict(range=[0, 10]),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # 顯示統計
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        q_scores = df["問卷分數"].dropna()
+        if len(q_scores) > 0:
+            st.metric("問卷平均分數", f"{q_scores.mean():.1f}")
+    
+    with col2:
+        ai_scores = df["AI提取分數"].dropna()
+        if len(ai_scores) > 0:
+            st.metric("AI 平均分數", f"{ai_scores.mean():.1f}")
+    
+    with col3:
+        # 計算相關係數
+        if len(q_scores) > 2 and len(ai_scores) > 2:
+            merged = df.dropna(subset=["問卷分數", "AI提取分數"])
+            if len(merged) > 2:
+                corr = merged["問卷分數"].corr(merged["AI提取分數"])
+                st.metric("相關係數", f"{corr:.3f}")
+
+
+def render_correlation_analysis(reports):
+    """相關性分析"""
+    st.markdown("##### 🔬 AI 對話 vs 問卷相關性分析")
+    
+    # 收集所有配對資料
+    symptom_pairs = {
+        "pain": [], "dyspnea": [], "cough": [],
+        "fatigue": [], "sleep": [], "appetite": [], "mood": []
+    }
+    
+    overall_pairs = []
+    
+    for r in reports:
+        # 問卷分數
+        symptoms_str = r.get("symptoms", "{}")
+        try:
+            symptoms = json.loads(symptoms_str) if isinstance(symptoms_str, str) else symptoms_str
+        except:
+            symptoms = {}
+        
+        # AI 摘要
+        ai_summary = r.get("ai_summary", "")
+        
+        # 整體分數配對
+        overall = r.get("overall_score")
+        ai_overall = extract_overall_from_summary(ai_summary)
+        if overall is not None and ai_overall is not None:
+            overall_pairs.append((float(overall), float(ai_overall)))
+        
+        # 各症狀配對
+        for symptom in symptom_pairs.keys():
+            q_score = symptoms.get(symptom)
+            ai_score = extract_score_from_summary(ai_summary, symptom)
+            if q_score is not None and ai_score is not None:
+                symptom_pairs[symptom].append((float(q_score), float(ai_score)))
+    
+    # === 整體相關性 ===
+    st.markdown("**整體評分相關性**")
+    
+    if len(overall_pairs) > 5:
+        q_scores = [p[0] for p in overall_pairs]
+        ai_scores = [p[1] for p in overall_pairs]
+        
+        # 散點圖
+        fig = px.scatter(
+            x=q_scores, y=ai_scores,
+            labels={"x": "問卷整體評分", "y": "AI 提取整體評分"},
+            trendline="ols"
+        )
+        fig.add_trace(go.Scatter(
+            x=[0, 10], y=[0, 10],
+            mode='lines',
+            line=dict(color='red', dash='dash'),
+            name='完美一致線'
+        ))
+        fig.update_layout(height=400)
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # 統計指標
+        from scipy import stats
+        corr, p_value = stats.pearsonr(q_scores, ai_scores)
+        
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Pearson 相關係數", f"{corr:.3f}")
+        col2.metric("P 值", f"{p_value:.4f}")
+        col3.metric("樣本數", len(overall_pairs))
+        
+        # 平均絕對誤差
+        mae = sum(abs(q - ai) for q, ai in overall_pairs) / len(overall_pairs)
+        col4.metric("平均絕對誤差", f"{mae:.2f}")
+    else:
+        st.info("樣本數不足（需至少 5 筆配對資料）")
+    
+    # === 各症狀相關性 ===
+    st.markdown("---")
+    st.markdown("**各症狀相關性摘要**")
+    
+    correlation_summary = []
+    
+    symptom_names = {
+        "pain": "疼痛", "dyspnea": "呼吸困難", "cough": "咳嗽",
+        "fatigue": "疲勞", "sleep": "睡眠", "appetite": "食慾", "mood": "情緒"
+    }
+    
+    for symptom, pairs in symptom_pairs.items():
+        if len(pairs) > 5:
+            q_scores = [p[0] for p in pairs]
+            ai_scores = [p[1] for p in pairs]
+            corr, p_value = stats.pearsonr(q_scores, ai_scores)
+            mae = sum(abs(q - ai) for q, ai in pairs) / len(pairs)
+            
+            correlation_summary.append({
+                "症狀": symptom_names.get(symptom, symptom),
+                "相關係數": f"{corr:.3f}",
+                "P 值": f"{p_value:.4f}",
+                "平均誤差": f"{mae:.2f}",
+                "樣本數": len(pairs),
+                "一致性": "✅ 高" if corr > 0.7 else "🟡 中" if corr > 0.4 else "🔴 低"
+            })
+    
+    if correlation_summary:
+        corr_df = pd.DataFrame(correlation_summary)
+        st.dataframe(corr_df, hide_index=True, use_container_width=True)
+        
+        # 整體評估
+        high_corr = len([c for c in correlation_summary if "✅" in c["一致性"]])
+        total = len(correlation_summary)
+        
+        st.markdown(f"""
+        **📊 一致性評估結果**
+        - 高一致性症狀: {high_corr}/{total}
+        - AI 對話式 PRO 與傳統問卷的整體一致性: {"✅ 良好" if high_corr/total > 0.6 else "🟡 中等" if high_corr/total > 0.3 else "需要改進"}
+        """)
+    else:
+        st.info("樣本數不足，無法進行相關性分析")
+
+
+def render_bland_altman(reports):
+    """Bland-Altman 圖"""
+    st.markdown("##### 📊 Bland-Altman 一致性分析")
+    
+    st.markdown("""
+    Bland-Altman 圖用於評估兩種測量方法的一致性：
+    - **X 軸**：兩種方法的平均值
+    - **Y 軸**：兩種方法的差異
+    - **中線**：平均差異（bias）
+    - **虛線**：95% 一致性界限 (Limits of Agreement)
+    """)
+    
+    # 收集配對資料
+    pairs = []
+    for r in reports:
+        q_score = r.get("overall_score")
+        ai_summary = r.get("ai_summary", "")
+        ai_score = extract_overall_from_summary(ai_summary)
+        
+        if q_score is not None and ai_score is not None:
+            pairs.append({
+                "questionnaire": float(q_score),
+                "ai": float(ai_score),
+                "mean": (float(q_score) + float(ai_score)) / 2,
+                "diff": float(q_score) - float(ai_score)
+            })
+    
+    if len(pairs) < 10:
+        st.warning("樣本數不足（建議至少 10 筆配對資料）")
+        return
+    
+    df = pd.DataFrame(pairs)
+    
+    # 計算統計量
+    mean_diff = df["diff"].mean()
+    std_diff = df["diff"].std()
+    upper_loa = mean_diff + 1.96 * std_diff
+    lower_loa = mean_diff - 1.96 * std_diff
+    
+    # 繪製 Bland-Altman 圖
+    fig = go.Figure()
+    
+    # 散點
+    fig.add_trace(go.Scatter(
+        x=df["mean"],
+        y=df["diff"],
+        mode='markers',
+        marker=dict(size=10, color='#2196F3'),
+        name='資料點'
+    ))
+    
+    # 平均差異線
+    fig.add_hline(y=mean_diff, line_dash="solid", line_color="green",
+                  annotation_text=f"Mean: {mean_diff:.2f}")
+    
+    # 95% 一致性界限
+    fig.add_hline(y=upper_loa, line_dash="dash", line_color="red",
+                  annotation_text=f"+1.96 SD: {upper_loa:.2f}")
+    fig.add_hline(y=lower_loa, line_dash="dash", line_color="red",
+                  annotation_text=f"-1.96 SD: {lower_loa:.2f}")
+    
+    # 零線
+    fig.add_hline(y=0, line_dash="dot", line_color="gray")
+    
+    fig.update_layout(
+        height=500,
+        xaxis_title="平均值 ((問卷 + AI) / 2)",
+        yaxis_title="差異 (問卷 - AI)",
+        title="Bland-Altman Plot: 問卷 vs AI 對話"
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # 統計摘要
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("平均差異 (Bias)", f"{mean_diff:.2f}")
+    col2.metric("差異標準差", f"{std_diff:.2f}")
+    col3.metric("95% LoA 上限", f"{upper_loa:.2f}")
+    col4.metric("95% LoA 下限", f"{lower_loa:.2f}")
+    
+    # 解讀
+    st.markdown(f"""
+    **📋 解讀**
+    - 平均差異 {mean_diff:.2f} 表示 {"問卷分數略高於 AI" if mean_diff > 0 else "AI 分數略高於問卷" if mean_diff < 0 else "兩者平均相近"}
+    - 95% 的差異落在 [{lower_loa:.2f}, {upper_loa:.2f}] 範圍內
+    - {"✅ 一致性良好" if abs(upper_loa - lower_loa) < 4 else "🟡 一致性中等" if abs(upper_loa - lower_loa) < 6 else "⚠️ 一致性較低，建議進一步分析"}
+    """)
+
+
+def render_detailed_comparison(patients, reports):
+    """詳細比較"""
+    st.markdown("##### 📋 詳細比較表")
+    
+    # 選擇病人
+    patient_options = {"全部病人": None}
+    patient_options.update({f"{p.get('name', '')} ({p.get('patient_id', '')})": p.get("patient_id") for p in patients})
+    selected = st.selectbox("選擇病人", list(patient_options.keys()), key="detail_patient")
+    patient_id = patient_options.get(selected)
+    
+    # 篩選
+    filtered = reports
+    if patient_id:
+        filtered = [r for r in reports if r.get("patient_id") == patient_id]
+    
+    if not filtered:
+        st.info("無回報資料")
+        return
+    
+    # 建立比較表
+    comparison_data = []
+    
+    symptom_names = {
+        "pain": "疼痛", "dyspnea": "呼吸困難", "cough": "咳嗽",
+        "fatigue": "疲勞", "sleep": "睡眠", "appetite": "食慾", "mood": "情緒"
+    }
+    
+    for r in sorted(filtered, key=lambda x: x.get("date", ""), reverse=True)[:50]:
+        # 問卷分數
+        symptoms_str = r.get("symptoms", "{}")
+        try:
+            symptoms = json.loads(symptoms_str) if isinstance(symptoms_str, str) else symptoms_str
+        except:
+            symptoms = {}
+        
+        # AI 摘要
+        ai_summary = r.get("ai_summary", "")
+        
+        row = {
+            "日期": r.get("date", ""),
+            "病人": r.get("patient_name", ""),
+            "問卷整體": r.get("overall_score", ""),
+            "AI整體": extract_overall_from_summary(ai_summary) or "-"
+        }
+        
+        # 各症狀比較
+        for key, name in list(symptom_names.items())[:4]:
+            q_score = symptoms.get(key, "-")
+            ai_score = extract_score_from_summary(ai_summary, key)
+            row[f"{name}(問卷)"] = q_score
+            row[f"{name}(AI)"] = ai_score if ai_score else "-"
+        
+        comparison_data.append(row)
+    
+    if comparison_data:
+        df = pd.DataFrame(comparison_data)
+        st.dataframe(df, hide_index=True, use_container_width=True)
+        
+        # 匯出按鈕
+        csv = df.to_csv(index=False, encoding='utf-8-sig')
+        st.download_button(
+            "📥 下載比較資料 (CSV)",
+            csv,
+            "ai_vs_questionnaire_comparison.csv",
+            "text/csv"
+        )
+
+
+def extract_score_from_summary(ai_summary, symptom):
+    """從 AI 摘要中提取症狀分數"""
+    if not ai_summary:
+        return None
+    
+    import re
+    
+    symptom_patterns = {
+        "pain": [r"疼痛[：:]\s*(\d+)", r"疼痛.*?(\d+)\s*分", r"痛.*?(\d+)"],
+        "dyspnea": [r"呼吸困難[：:]\s*(\d+)", r"呼吸.*?(\d+)\s*分", r"喘.*?(\d+)"],
+        "cough": [r"咳嗽[：:]\s*(\d+)", r"咳嗽.*?(\d+)\s*分", r"咳.*?(\d+)"],
+        "fatigue": [r"疲勞[：:]\s*(\d+)", r"疲勞.*?(\d+)\s*分", r"累.*?(\d+)"],
+        "sleep": [r"睡眠[：:]\s*(\d+)", r"睡眠.*?(\d+)\s*分", r"失眠.*?(\d+)"],
+        "appetite": [r"食慾[：:]\s*(\d+)", r"食慾.*?(\d+)\s*分", r"胃口.*?(\d+)"],
+        "mood": [r"情緒[：:]\s*(\d+)", r"情緒.*?(\d+)\s*分", r"心情.*?(\d+)"]
+    }
+    
+    patterns = symptom_patterns.get(symptom, [])
+    
+    for pattern in patterns:
+        match = re.search(pattern, ai_summary)
+        if match:
+            score = int(match.group(1))
+            if 0 <= score <= 10:
+                return score
+    
+    return None
+
+
+def extract_overall_from_summary(ai_summary):
+    """從 AI 摘要中提取整體分數"""
+    if not ai_summary:
+        return None
+    
+    import re
+    
+    patterns = [
+        r"整體評分[：:]\s*(\d+)",
+        r"整體.*?(\d+)\s*/\s*10",
+        r"評分[：:]\s*(\d+)",
+        r"(\d+)\s*/\s*10\s*分"
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, ai_summary)
+        if match:
+            score = int(match.group(1))
+            if 0 <= score <= 10:
+                return score
+    
+    return None
+
+
 def render_cohort_analysis(patients, reports):
     """病人分群分析"""
     st.subheader("👥 病人分群分析")
@@ -921,75 +1828,361 @@ def render_workload_analytics(reports, interventions):
 
 
 def render_data_export(patients, reports, interventions):
-    """資料匯出"""
-    st.subheader("📥 資料匯出")
+    """資料匯出（完整版）"""
+    st.subheader("📥 資料匯出中心")
     
-    st.markdown("選擇要匯出的資料：")
+    st.markdown("""
+    <div style="background-color: #e3f2fd; padding: 15px; border-radius: 10px; margin-bottom: 20px;">
+    <b>💡 匯出說明</b><br>
+    所有資料皆以 CSV 格式匯出，可用 Excel 開啟進行進階分析。
+    匯出資料已去識別化處理，符合研究倫理規範。
+    </div>
+    """, unsafe_allow_html=True)
     
-    col1, col2, col3 = st.columns(3)
+    # === 快速匯出 ===
+    st.markdown("### 📦 快速匯出")
+    
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        if st.button("📥 匯出病人資料", use_container_width=True):
+        st.markdown("**👥 病人資料**")
+        st.caption(f"共 {len(patients)} 筆")
+        if patients:
             df = pd.DataFrame(patients)
-            csv = df.to_csv(index=False)
+            # 去除敏感欄位
+            safe_cols = [c for c in df.columns if c not in ["password", "phone"]]
+            df_safe = df[safe_cols] if safe_cols else df
+            csv = df_safe.to_csv(index=False, encoding='utf-8-sig')
             st.download_button(
-                "⬇️ 下載 patients.csv",
+                "⬇️ 下載 CSV",
                 csv,
-                "patients.csv",
-                "text/csv"
+                f"patients_{datetime.now().strftime('%Y%m%d')}.csv",
+                "text/csv",
+                key="dl_patients"
             )
     
     with col2:
-        if st.button("📥 匯出回報資料", use_container_width=True):
+        st.markdown("**📋 回報資料**")
+        st.caption(f"共 {len(reports)} 筆")
+        if reports:
             df = pd.DataFrame(reports)
-            csv = df.to_csv(index=False)
+            csv = df.to_csv(index=False, encoding='utf-8-sig')
             st.download_button(
-                "⬇️ 下載 reports.csv",
+                "⬇️ 下載 CSV",
                 csv,
-                "reports.csv",
-                "text/csv"
+                f"reports_{datetime.now().strftime('%Y%m%d')}.csv",
+                "text/csv",
+                key="dl_reports"
             )
     
     with col3:
-        if st.button("📥 匯出介入紀錄", use_container_width=True):
+        st.markdown("**📝 介入紀錄**")
+        st.caption(f"共 {len(interventions)} 筆")
+        if interventions:
             df = pd.DataFrame(interventions)
-            csv = df.to_csv(index=False)
+            csv = df.to_csv(index=False, encoding='utf-8-sig')
             st.download_button(
-                "⬇️ 下載 interventions.csv",
+                "⬇️ 下載 CSV",
                 csv,
-                "interventions.csv",
-                "text/csv"
+                f"interventions_{datetime.now().strftime('%Y%m%d')}.csv",
+                "text/csv",
+                key="dl_interventions"
             )
+    
+    with col4:
+        st.markdown("**📊 全部資料**")
+        st.caption("打包下載")
+        if st.button("📦 產生完整匯出", key="export_all"):
+            st.info("請分別下載上方各類資料")
     
     st.divider()
     
-    # 自訂報表
-    st.markdown("##### 📊 自訂報表產生器")
+    # === 自訂報表 ===
+    st.markdown("### 📊 自訂報表產生器")
     
-    date_range = st.date_input(
-        "選擇日期範圍",
-        value=(datetime.now() - timedelta(days=30), datetime.now()),
-        max_value=datetime.now()
-    )
+    col1, col2 = st.columns(2)
     
-    if st.button("產生期間報表", type="primary"):
-        start_date = date_range[0].strftime("%Y-%m-%d")
-        end_date = date_range[1].strftime("%Y-%m-%d") if len(date_range) > 1 else start_date
+    with col1:
+        report_type = st.selectbox(
+            "報表類型",
+            [
+                "期間回報摘要",
+                "病人依從性報表",
+                "症狀分析報表",
+                "介入成效報表",
+                "AI vs 問卷比較資料"
+            ]
+        )
+    
+    with col2:
+        date_range = st.date_input(
+            "日期範圍",
+            value=(datetime.now() - timedelta(days=30), datetime.now()),
+            max_value=datetime.now()
+        )
+    
+    if st.button("📊 產生報表", type="primary"):
+        try:
+            start_date = date_range[0].strftime("%Y-%m-%d")
+            end_date = date_range[1].strftime("%Y-%m-%d") if len(date_range) > 1 else start_date
+        except:
+            start_date = end_date = datetime.now().strftime("%Y-%m-%d")
         
+        # 篩選期間資料
         period_reports = [r for r in reports if start_date <= r.get("date", "") <= end_date]
+        period_interventions = [i for i in interventions if start_date <= i.get("date", "") <= end_date]
         
-        st.markdown(f"### 📋 {start_date} ~ {end_date} 報表摘要")
+        st.markdown(f"### 📋 {start_date} ~ {end_date}")
         
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("回報總數", len(period_reports))
-        with col2:
-            red = len([r for r in period_reports if r.get("alert_level") == "red"])
-            st.metric("🔴 紅色警示", red)
-        with col3:
-            yellow = len([r for r in period_reports if r.get("alert_level") == "yellow"])
-            st.metric("🟡 黃色警示", yellow)
-        with col4:
+        if report_type == "期間回報摘要":
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("回報總數", len(period_reports))
+            with col2:
+                red = len([r for r in period_reports if r.get("alert_level") == "red"])
+                st.metric("🔴 紅色警示", red)
+            with col3:
+                yellow = len([r for r in period_reports if r.get("alert_level") == "yellow"])
+                st.metric("🟡 黃色警示", yellow)
+            with col4:
+                if period_reports:
+                    avg = sum([r.get("overall_score", 0) for r in period_reports]) / len(period_reports)
+                    st.metric("平均評分", f"{avg:.1f}")
+            
             if period_reports:
-                avg = sum([r.get("overall_score", 0) for r in period_reports]) / len(period_reports)
-                st.metric("平均評分", f"{avg:.1f}")
+                df = pd.DataFrame(period_reports)
+                csv = df.to_csv(index=False, encoding='utf-8-sig')
+                st.download_button(
+                    "⬇️ 下載期間回報資料",
+                    csv,
+                    f"reports_{start_date}_{end_date}.csv",
+                    "text/csv"
+                )
+        
+        elif report_type == "病人依從性報表":
+            adherence_data = []
+            for p in patients:
+                pid = p.get("patient_id")
+                p_reports = [r for r in period_reports if r.get("patient_id") == pid]
+                post_op = p.get("post_op_day", 0)
+                
+                # 計算期間天數
+                try:
+                    days = (datetime.strptime(end_date, "%Y-%m-%d") - datetime.strptime(start_date, "%Y-%m-%d")).days + 1
+                except:
+                    days = 30
+                
+                adherence = len(p_reports) / days * 100 if days > 0 else 0
+                
+                adherence_data.append({
+                    "病人ID": pid,
+                    "姓名": p.get("name", ""),
+                    "術後天數": post_op,
+                    "期間回報數": len(p_reports),
+                    "期間天數": days,
+                    "依從率(%)": f"{adherence:.1f}"
+                })
+            
+            df = pd.DataFrame(adherence_data)
+            st.dataframe(df, hide_index=True, use_container_width=True)
+            
+            csv = df.to_csv(index=False, encoding='utf-8-sig')
+            st.download_button(
+                "⬇️ 下載依從性報表",
+                csv,
+                f"adherence_{start_date}_{end_date}.csv",
+                "text/csv"
+            )
+        
+        elif report_type == "症狀分析報表":
+            symptom_names = {
+                "pain": "疼痛", "dyspnea": "呼吸困難", "cough": "咳嗽",
+                "fatigue": "疲勞", "sleep": "睡眠", "appetite": "食慾", "mood": "情緒"
+            }
+            
+            symptom_data = []
+            for r in period_reports:
+                symptoms_str = r.get("symptoms", "{}")
+                try:
+                    symptoms = json.loads(symptoms_str) if isinstance(symptoms_str, str) else symptoms_str
+                    row = {
+                        "日期": r.get("date", ""),
+                        "病人": r.get("patient_name", ""),
+                        "整體評分": r.get("overall_score", 0),
+                        "警示等級": r.get("alert_level", "")
+                    }
+                    for key, name in symptom_names.items():
+                        row[name] = symptoms.get(key, "")
+                    symptom_data.append(row)
+                except:
+                    pass
+            
+            if symptom_data:
+                df = pd.DataFrame(symptom_data)
+                st.dataframe(df, hide_index=True, use_container_width=True)
+                
+                csv = df.to_csv(index=False, encoding='utf-8-sig')
+                st.download_button(
+                    "⬇️ 下載症狀分析資料",
+                    csv,
+                    f"symptoms_{start_date}_{end_date}.csv",
+                    "text/csv"
+                )
+        
+        elif report_type == "介入成效報表":
+            if period_interventions:
+                df = pd.DataFrame(period_interventions)
+                
+                # 統計
+                col1, col2, col3 = st.columns(3)
+                col1.metric("介入總數", len(period_interventions))
+                
+                improved = len([i for i in period_interventions if i.get("outcome") in ["改善", "部分改善"]])
+                col2.metric("改善數", improved)
+                col3.metric("改善率", f"{improved/len(period_interventions)*100:.1f}%")
+                
+                st.dataframe(df, hide_index=True, use_container_width=True)
+                
+                csv = df.to_csv(index=False, encoding='utf-8-sig')
+                st.download_button(
+                    "⬇️ 下載介入成效資料",
+                    csv,
+                    f"interventions_{start_date}_{end_date}.csv",
+                    "text/csv"
+                )
+            else:
+                st.info("此期間無介入紀錄")
+        
+        elif report_type == "AI vs 問卷比較資料":
+            comparison_data = []
+            for r in period_reports:
+                ai_summary = r.get("ai_summary", "")
+                symptoms_str = r.get("symptoms", "{}")
+                
+                try:
+                    symptoms = json.loads(symptoms_str) if isinstance(symptoms_str, str) else symptoms_str
+                except:
+                    symptoms = {}
+                
+                comparison_data.append({
+                    "日期": r.get("date", ""),
+                    "病人": r.get("patient_name", ""),
+                    "問卷整體評分": r.get("overall_score", ""),
+                    "問卷疼痛": symptoms.get("pain", ""),
+                    "問卷呼吸困難": symptoms.get("dyspnea", ""),
+                    "問卷咳嗽": symptoms.get("cough", ""),
+                    "問卷疲勞": symptoms.get("fatigue", ""),
+                    "AI摘要": ai_summary,
+                    "警示等級": r.get("alert_level", "")
+                })
+            
+            if comparison_data:
+                df = pd.DataFrame(comparison_data)
+                st.dataframe(df, hide_index=True, use_container_width=True)
+                
+                csv = df.to_csv(index=False, encoding='utf-8-sig')
+                st.download_button(
+                    "⬇️ 下載 AI vs 問卷比較資料",
+                    csv,
+                    f"ai_vs_questionnaire_{start_date}_{end_date}.csv",
+                    "text/csv"
+                )
+    
+    st.divider()
+    
+    # === 研究用匯出 ===
+    st.markdown("### 🔬 研究用資料匯出")
+    
+    st.warning("⚠️ 研究用資料包含詳細資訊，請確保符合 IRB 規範後再下載使用。")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**📊 MDASI-LC 格式匯出**")
+        st.caption("符合 MD Anderson 格式的症狀資料")
+        
+        if st.button("產生 MDASI-LC 格式", key="mdasi_export"):
+            mdasi_data = []
+            for r in reports:
+                patient = next((p for p in patients if p.get("patient_id") == r.get("patient_id")), {})
+                symptoms_str = r.get("symptoms", "{}")
+                try:
+                    symptoms = json.loads(symptoms_str) if isinstance(symptoms_str, str) else symptoms_str
+                except:
+                    symptoms = {}
+                
+                mdasi_data.append({
+                    "Subject_ID": r.get("patient_id", ""),
+                    "Assessment_Date": r.get("date", ""),
+                    "Post_Op_Day": patient.get("post_op_day", ""),
+                    "Surgery_Type": patient.get("surgery_type", ""),
+                    "Pain": symptoms.get("pain", ""),
+                    "Fatigue": symptoms.get("fatigue", ""),
+                    "Nausea": symptoms.get("nausea", ""),
+                    "Sleep_Disturbance": symptoms.get("sleep", ""),
+                    "Distress": symptoms.get("distress", ""),
+                    "Shortness_of_Breath": symptoms.get("dyspnea", ""),
+                    "Lack_of_Appetite": symptoms.get("appetite", ""),
+                    "Drowsiness": symptoms.get("drowsy", ""),
+                    "Dry_Mouth": symptoms.get("dry_mouth", ""),
+                    "Sadness": symptoms.get("mood", ""),
+                    "Cough": symptoms.get("cough", ""),
+                    "Overall_Severity": r.get("overall_score", ""),
+                    "Alert_Level": r.get("alert_level", "")
+                })
+            
+            if mdasi_data:
+                df = pd.DataFrame(mdasi_data)
+                csv = df.to_csv(index=False, encoding='utf-8-sig')
+                st.download_button(
+                    "⬇️ 下載 MDASI-LC 格式",
+                    csv,
+                    f"mdasi_lc_{datetime.now().strftime('%Y%m%d')}.csv",
+                    "text/csv",
+                    key="dl_mdasi"
+                )
+    
+    with col2:
+        st.markdown("**📈 縱向追蹤資料**")
+        st.caption("適合存活分析、趨勢分析使用")
+        
+        if st.button("產生縱向追蹤格式", key="longitudinal_export"):
+            long_data = []
+            for p in patients:
+                pid = p.get("patient_id")
+                p_reports = sorted(
+                    [r for r in reports if r.get("patient_id") == pid],
+                    key=lambda x: x.get("date", "")
+                )
+                
+                for i, r in enumerate(p_reports):
+                    symptoms_str = r.get("symptoms", "{}")
+                    try:
+                        symptoms = json.loads(symptoms_str) if isinstance(symptoms_str, str) else symptoms_str
+                    except:
+                        symptoms = {}
+                    
+                    long_data.append({
+                        "Subject_ID": pid,
+                        "Time_Point": i + 1,
+                        "Date": r.get("date", ""),
+                        "Post_Op_Day": p.get("post_op_day", ""),
+                        "Overall_Score": r.get("overall_score", ""),
+                        "Pain": symptoms.get("pain", ""),
+                        "Dyspnea": symptoms.get("dyspnea", ""),
+                        "Cough": symptoms.get("cough", ""),
+                        "Fatigue": symptoms.get("fatigue", ""),
+                        "Alert_Level": r.get("alert_level", ""),
+                        "Handled": r.get("alert_handled", "")
+                    })
+            
+            if long_data:
+                df = pd.DataFrame(long_data)
+                csv = df.to_csv(index=False, encoding='utf-8-sig')
+                st.download_button(
+                    "⬇️ 下載縱向追蹤資料",
+                    csv,
+                    f"longitudinal_{datetime.now().strftime('%Y%m%d')}.csv",
+                    "text/csv",
+                    key="dl_long"
+                )
