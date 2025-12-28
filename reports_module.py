@@ -120,7 +120,7 @@ def render_overview_dashboard(patients, reports, interventions):
         )
     
     with col2:
-        today_reports = len([r for r in reports if r.get("date") == today])
+        today_reports = len([r for r in reports if r.get("report_date", r.get("report_date", r.get("date", ""))) == today])
         st.metric("📋 今日回報", today_reports)
     
     with col3:
@@ -271,7 +271,7 @@ def render_overview_dashboard(patients, reports, interventions):
             daily_alerts[date] = {"紅色": 0, "黃色": 0, "綠色": 0}
         
         for r in reports:
-            date = r.get("date", "")
+            date = r.get("report_date", r.get("date", ""))
             if date in daily_alerts:
                 level = r.get("alert_level", "green")
                 if level == "red":
@@ -309,7 +309,7 @@ def render_overview_dashboard(patients, reports, interventions):
             week_label = week_start.strftime("%m/%d")
             
             week_reports = len([r for r in reports 
-                               if week_start.strftime("%Y-%m-%d") <= r.get("date", "") < week_end.strftime("%Y-%m-%d")])
+                               if week_start.strftime("%Y-%m-%d") <= r.get("report_date", r.get("date", "")) < week_end.strftime("%Y-%m-%d")])
             week_expected = len([p for p in patients if p.get("status") not in ["discharged"]]) * 7
             
             adherence = (week_reports / max(week_expected, 1)) * 100
@@ -424,20 +424,34 @@ def render_symptom_trajectory(patients, reports):
             # 找到對應的病人
             patient = next((p for p in patients if p.get("patient_id") == r.get("patient_id")), None)
             if patient:
-                report_date = r.get("date", "")
+                # 支援 report_date 或 date 欄位
+                report_date = r.get("report_date", r.get("report_date", r.get("date", "")))
                 surgery_date = patient.get("surgery_date", "")
                 if report_date and surgery_date:
                     try:
-                        rd = datetime.strptime(report_date, "%Y-%m-%d")
-                        sd = datetime.strptime(surgery_date, "%Y-%m-%d")
+                        # 處理可能的日期格式
+                        if isinstance(report_date, str):
+                            rd = datetime.strptime(report_date.split()[0], "%Y-%m-%d")
+                        else:
+                            rd = report_date
+                        if isinstance(surgery_date, str):
+                            sd = datetime.strptime(surgery_date.split()[0], "%Y-%m-%d")
+                        else:
+                            sd = surgery_date
                         post_op_day = (rd - sd).days
                         week = post_op_day // 7  # 術後第幾週
                         
                         if 0 <= week <= 26:  # 只看前 6 個月
                             if week not in week_data:
                                 week_data[week] = []
-                            week_data[week].append(r.get("overall_score", 0))
-                    except:
+                            # 支援多種欄位名稱
+                            score = r.get("overall_score") or r.get("pain_score") or 0
+                            try:
+                                score = float(score)
+                            except:
+                                score = 0
+                            week_data[week].append(score)
+                    except Exception as e:
                         pass
         
         if week_data:
@@ -521,13 +535,26 @@ def render_symptom_trajectory(patients, reports):
                 patient = next((p for p in type_patients if p.get("patient_id") == r.get("patient_id")), None)
                 if patient:
                     try:
-                        rd = datetime.strptime(r.get("date", ""), "%Y-%m-%d")
-                        sd = datetime.strptime(patient.get("surgery_date", ""), "%Y-%m-%d")
+                        report_date = r.get("report_date", r.get("report_date", r.get("date", "")))
+                        surgery_date = patient.get("surgery_date", "")
+                        if isinstance(report_date, str):
+                            rd = datetime.strptime(report_date.split()[0], "%Y-%m-%d")
+                        else:
+                            rd = report_date
+                        if isinstance(surgery_date, str):
+                            sd = datetime.strptime(surgery_date.split()[0], "%Y-%m-%d")
+                        else:
+                            sd = surgery_date
                         week = (rd - sd).days // 7
-                        if 0 <= week <= 12:
+                        if 0 <= week <= 26:
                             if week not in week_scores:
                                 week_scores[week] = []
-                            week_scores[week].append(r.get("overall_score", 0))
+                            score = r.get("overall_score") or r.get("pain_score") or 0
+                            try:
+                                score = float(score)
+                            except:
+                                score = 0
+                            week_scores[week].append(score)
                     except:
                         pass
             
@@ -539,7 +566,7 @@ def render_symptom_trajectory(patients, reports):
                     x=weeks,
                     y=avg_scores,
                     mode='lines+markers',
-                    name=surgery_type
+                    name=surgery_type[:30] if len(surgery_type) > 30 else surgery_type  # 截短名稱
                 ))
         
         fig.update_layout(
@@ -562,12 +589,19 @@ def render_symptom_trajectory(patients, reports):
             patient_id = patient_options[selected_label]
             patient_reports = sorted(
                 [r for r in reports if r.get("patient_id") == patient_id],
-                key=lambda x: x.get("date", "")
+                key=lambda x: x.get("report_date", x.get("date", ""))
             )
             
             if patient_reports:
-                dates = [r.get("date", "") for r in patient_reports]
-                scores = [r.get("overall_score", 0) for r in patient_reports]
+                dates = [r.get("report_date", r.get("report_date", r.get("date", ""))) for r in patient_reports]
+                scores = []
+                for r in patient_reports:
+                    score = r.get("overall_score") or r.get("pain_score") or 0
+                    try:
+                        score = float(score)
+                    except:
+                        score = 0
+                    scores.append(score)
                 
                 fig = go.Figure()
                 
@@ -656,7 +690,7 @@ def render_alert_analytics(reports):
     week_alerts = {}
     for r in reports:
         try:
-            date = datetime.strptime(r.get("date", ""), "%Y-%m-%d")
+            date = datetime.strptime(r.get("report_date", r.get("date", "")), "%Y-%m-%d")
             week_start = (date - timedelta(days=date.weekday())).strftime("%Y-%m-%d")
             
             if week_start not in week_alerts:
@@ -691,15 +725,31 @@ def render_adherence_analysis(patients, reports):
     
     # 計算每位病人的依從率
     adherence_data = []
+    today = datetime.now().date()
+    
     for p in patients:
         patient_id = p.get("patient_id")
-        post_op_days = p.get("post_op_day", 0)
+        
+        # 動態計算術後天數
+        surgery_date_str = p.get("surgery_date", "")
+        if not surgery_date_str:
+            continue
+            
+        try:
+            if isinstance(surgery_date_str, str):
+                surgery_date = datetime.strptime(surgery_date_str.split()[0], "%Y-%m-%d").date()
+            else:
+                surgery_date = surgery_date_str
+            post_op_days = (today - surgery_date).days
+        except:
+            continue
         
         if post_op_days <= 0:
             continue
         
         patient_reports = [r for r in reports if r.get("patient_id") == patient_id]
-        unique_days = len(set([r.get("date") for r in patient_reports]))
+        # 計算有回報的不重複天數
+        unique_days = len(set([r.get("report_date", r.get("report_date", r.get("date", ""))) for r in patient_reports if r.get("report_date") or r.get("date")]))
         
         adherence = (unique_days / post_op_days * 100) if post_op_days > 0 else 0
         
@@ -795,7 +845,7 @@ def render_symptom_heatmap(patients, reports):
     
     for r in reports:
         try:
-            date = datetime.strptime(r.get("date", ""), "%Y-%m-%d")
+            date = datetime.strptime(r.get("report_date", r.get("date", "")), "%Y-%m-%d")
             # 找到對應病人計算術後週數
             patient = next((p for p in patients if p.get("patient_id") == r.get("patient_id")), None)
             if patient and patient.get("surgery_date"):
@@ -1273,7 +1323,7 @@ def render_trend_comparison(patients, reports):
     # 準備資料
     chart_data = []
     for r in patient_reports:
-        date = r.get("date", "")
+        date = r.get("report_date", r.get("date", ""))
         
         # 問卷分數
         symptoms_str = r.get("symptoms", "{}")
@@ -1375,40 +1425,42 @@ def render_correlation_analysis(reports):
     """相關性分析"""
     st.markdown("##### 🔬 AI 對話 vs 問卷相關性分析")
     
-    # 收集所有配對資料
-    symptom_pairs = {
-        "pain": [], "dyspnea": [], "cough": [],
-        "fatigue": [], "sleep": [], "appetite": [], "mood": []
+    # 欄位對應
+    symptom_mapping = {
+        "pain": {"q": "questionnaire_pain", "ai": "pain_score", "name": "疼痛"},
+        "dyspnea": {"q": "questionnaire_dyspnea", "ai": "dyspnea_score", "name": "呼吸困難"},
+        "cough": {"q": "questionnaire_cough", "ai": "cough_score", "name": "咳嗽"},
+        "fatigue": {"q": "questionnaire_fatigue", "ai": "fatigue_score", "name": "疲勞"},
+        "sleep": {"q": "questionnaire_sleep", "ai": "sleep_score", "name": "睡眠"},
+        "appetite": {"q": "questionnaire_appetite", "ai": "appetite_score", "name": "食慾"},
     }
     
+    # 收集所有配對資料
+    symptom_pairs = {key: [] for key in symptom_mapping.keys()}
     overall_pairs = []
     
     for r in reports:
-        # 問卷分數
-        symptoms_str = r.get("symptoms", "{}")
-        try:
-            symptoms = json.loads(symptoms_str) if isinstance(symptoms_str, str) else symptoms_str
-        except:
-            symptoms = {}
-        
-        # AI 摘要
-        ai_summary = r.get("ai_summary", "")
-        
-        # 整體分數配對
-        overall = r.get("overall_score")
-        ai_overall = extract_overall_from_summary(ai_summary)
-        if overall is not None and ai_overall is not None:
-            overall_pairs.append((float(overall), float(ai_overall)))
+        # 整體分數配對 (用疼痛作為代表)
+        q_pain = r.get("questionnaire_pain")
+        ai_pain = r.get("pain_score")
+        if q_pain is not None and ai_pain is not None:
+            try:
+                overall_pairs.append((float(q_pain), float(ai_pain)))
+            except:
+                pass
         
         # 各症狀配對
-        for symptom in symptom_pairs.keys():
-            q_score = symptoms.get(symptom)
-            ai_score = extract_score_from_summary(ai_summary, symptom)
+        for key, mapping in symptom_mapping.items():
+            q_score = r.get(mapping["q"])
+            ai_score = r.get(mapping["ai"])
             if q_score is not None and ai_score is not None:
-                symptom_pairs[symptom].append((float(q_score), float(ai_score)))
+                try:
+                    symptom_pairs[key].append((float(q_score), float(ai_score)))
+                except:
+                    pass
     
-    # === 整體相關性 ===
-    st.markdown("**整體評分相關性**")
+    # === 整體相關性（以疼痛為例）===
+    st.markdown("**疼痛分數相關性（問卷 vs AI）**")
     
     if len(overall_pairs) > 5:
         q_scores = [p[0] for p in overall_pairs]
@@ -1417,7 +1469,7 @@ def render_correlation_analysis(reports):
         # 散點圖
         fig = px.scatter(
             x=q_scores, y=ai_scores,
-            labels={"x": "問卷整體評分", "y": "AI 提取整體評分"},
+            labels={"x": "問卷疼痛評分", "y": "AI 對話疼痛評分"},
             trendline="ols"
         )
         fig.add_trace(go.Scatter(
@@ -1442,7 +1494,7 @@ def render_correlation_analysis(reports):
         mae = sum(abs(q - ai) for q, ai in overall_pairs) / len(overall_pairs)
         col4.metric("平均絕對誤差", f"{mae:.2f}")
     else:
-        st.info("樣本數不足（需至少 5 筆配對資料）")
+        st.info(f"樣本數不足（目前 {len(overall_pairs)} 筆，需至少 5 筆配對資料）")
     
     # === 各症狀相關性 ===
     st.markdown("---")
@@ -1450,20 +1502,17 @@ def render_correlation_analysis(reports):
     
     correlation_summary = []
     
-    symptom_names = {
-        "pain": "疼痛", "dyspnea": "呼吸困難", "cough": "咳嗽",
-        "fatigue": "疲勞", "sleep": "睡眠", "appetite": "食慾", "mood": "情緒"
-    }
-    
-    for symptom, pairs in symptom_pairs.items():
+    for key, mapping in symptom_mapping.items():
+        pairs = symptom_pairs[key]
         if len(pairs) > 5:
             q_scores = [p[0] for p in pairs]
             ai_scores = [p[1] for p in pairs]
+            from scipy import stats
             corr, p_value = stats.pearsonr(q_scores, ai_scores)
             mae = sum(abs(q - ai) for q, ai in pairs) / len(pairs)
             
             correlation_summary.append({
-                "症狀": symptom_names.get(symptom, symptom),
+                "症狀": mapping["name"],
                 "相關係數": f"{corr:.3f}",
                 "P 值": f"{p_value:.4f}",
                 "平均誤差": f"{mae:.2f}",
@@ -1500,23 +1549,43 @@ def render_bland_altman(reports):
     - **虛線**：95% 一致性界限 (Limits of Agreement)
     """)
     
+    # 選擇比較的症狀
+    symptom_options = {
+        "疼痛": ("questionnaire_pain", "pain_score"),
+        "呼吸困難": ("questionnaire_dyspnea", "dyspnea_score"),
+        "疲勞": ("questionnaire_fatigue", "fatigue_score"),
+        "咳嗽": ("questionnaire_cough", "cough_score"),
+    }
+    
+    selected_symptom = st.selectbox("選擇比較的症狀", list(symptom_options.keys()), key="ba_symptom")
+    q_field, ai_field = symptom_options[selected_symptom]
+    
     # 收集配對資料
     pairs = []
     for r in reports:
-        q_score = r.get("overall_score")
-        ai_summary = r.get("ai_summary", "")
-        ai_score = extract_overall_from_summary(ai_summary)
+        q_score = r.get(q_field)
+        ai_score = r.get(ai_field)
         
+        # 確保兩者都有數值
         if q_score is not None and ai_score is not None:
-            pairs.append({
-                "questionnaire": float(q_score),
-                "ai": float(ai_score),
-                "mean": (float(q_score) + float(ai_score)) / 2,
-                "diff": float(q_score) - float(ai_score)
-            })
+            try:
+                q_val = float(q_score)
+                ai_val = float(ai_score)
+                pairs.append({
+                    "questionnaire": q_val,
+                    "ai": ai_val,
+                    "mean": (q_val + ai_val) / 2,
+                    "diff": q_val - ai_val,
+                    "patient": r.get("patient_name", ""),
+                    "date": r.get("report_date", r.get("date", ""))
+                })
+            except (ValueError, TypeError):
+                pass
     
     if len(pairs) < 10:
-        st.warning("樣本數不足（建議至少 10 筆配對資料）")
+        st.warning(f"樣本數不足（目前 {len(pairs)} 筆，建議至少 10 筆配對資料）")
+        if len(pairs) == 0:
+            st.info("請確認資料中有 questionnaire_* 和 *_score 欄位")
         return
     
     df = pd.DataFrame(pairs)
@@ -1599,35 +1668,35 @@ def render_detailed_comparison(patients, reports):
     # 建立比較表
     comparison_data = []
     
-    symptom_names = {
-        "pain": "疼痛", "dyspnea": "呼吸困難", "cough": "咳嗽",
-        "fatigue": "疲勞", "sleep": "睡眠", "appetite": "食慾", "mood": "情緒"
+    # 欄位對應：問卷欄位 -> AI 欄位
+    symptom_mapping = {
+        "pain": {"questionnaire": "questionnaire_pain", "ai": "pain_score", "name": "疼痛"},
+        "dyspnea": {"questionnaire": "questionnaire_dyspnea", "ai": "dyspnea_score", "name": "呼吸困難"},
+        "cough": {"questionnaire": "questionnaire_cough", "ai": "cough_score", "name": "咳嗽"},
+        "fatigue": {"questionnaire": "questionnaire_fatigue", "ai": "fatigue_score", "name": "疲勞"},
     }
     
-    for r in sorted(filtered, key=lambda x: x.get("date", ""), reverse=True)[:50]:
-        # 問卷分數
-        symptoms_str = r.get("symptoms", "{}")
-        try:
-            symptoms = json.loads(symptoms_str) if isinstance(symptoms_str, str) else symptoms_str
-        except:
-            symptoms = {}
-        
-        # AI 摘要
-        ai_summary = r.get("ai_summary", "")
-        
+    for r in sorted(filtered, key=lambda x: x.get("report_date", x.get("date", "")), reverse=True)[:50]:
         row = {
-            "日期": r.get("date", ""),
+            "日期": r.get("report_date", r.get("date", "")),
             "病人": r.get("patient_name", ""),
-            "問卷整體": r.get("overall_score", ""),
-            "AI整體": extract_overall_from_summary(ai_summary) or "-"
+            "問卷整體": r.get("overall_score", "-"),
+            "AI整體": r.get("total_score", "-")  # 或從 ai_summary 提取
         }
         
-        # 各症狀比較
-        for key, name in list(symptom_names.items())[:4]:
-            q_score = symptoms.get(key, "-")
-            ai_score = extract_score_from_summary(ai_summary, key)
-            row[f"{name}(問卷)"] = q_score
-            row[f"{name}(AI)"] = ai_score if ai_score else "-"
+        # 各症狀比較 - 使用正確的欄位名稱
+        for key, mapping in symptom_mapping.items():
+            q_field = mapping["questionnaire"]
+            ai_field = mapping["ai"]
+            name = mapping["name"]
+            
+            # 問卷分數
+            q_score = r.get(q_field, "")
+            row[f"{name}(問卷)"] = q_score if q_score != "" else "-"
+            
+            # AI 分數
+            ai_score = r.get(ai_field, "")
+            row[f"{name}(AI)"] = ai_score if ai_score != "" else "-"
         
         comparison_data.append(row)
     
@@ -1929,8 +1998,8 @@ def render_data_export(patients, reports, interventions):
             start_date = end_date = datetime.now().strftime("%Y-%m-%d")
         
         # 篩選期間資料
-        period_reports = [r for r in reports if start_date <= r.get("date", "") <= end_date]
-        period_interventions = [i for i in interventions if start_date <= i.get("date", "") <= end_date]
+        period_reports = [r for r in reports if start_date <= r.get("report_date", r.get("date", "")) <= end_date]
+        period_interventions = [i for i in interventions if start_date <= i.get("intervention_date", i.get("date", "")) <= end_date]
         
         st.markdown(f"### 📋 {start_date} ~ {end_date}")
         
@@ -2006,7 +2075,7 @@ def render_data_export(patients, reports, interventions):
                 try:
                     symptoms = json.loads(symptoms_str) if isinstance(symptoms_str, str) else symptoms_str
                     row = {
-                        "日期": r.get("date", ""),
+                        "日期": r.get("report_date", r.get("date", "")),
                         "病人": r.get("patient_name", ""),
                         "整體評分": r.get("overall_score", 0),
                         "警示等級": r.get("alert_level", "")
@@ -2065,7 +2134,7 @@ def render_data_export(patients, reports, interventions):
                     symptoms = {}
                 
                 comparison_data.append({
-                    "日期": r.get("date", ""),
+                    "日期": r.get("report_date", r.get("date", "")),
                     "病人": r.get("patient_name", ""),
                     "問卷整體評分": r.get("overall_score", ""),
                     "問卷疼痛": symptoms.get("pain", ""),
@@ -2113,7 +2182,7 @@ def render_data_export(patients, reports, interventions):
                 
                 mdasi_data.append({
                     "Subject_ID": r.get("patient_id", ""),
-                    "Assessment_Date": r.get("date", ""),
+                    "Assessment_Date": r.get("report_date", r.get("date", "")),
                     "Post_Op_Day": patient.get("post_op_day", ""),
                     "Surgery_Type": patient.get("surgery_type", ""),
                     "Pain": symptoms.get("pain", ""),
@@ -2165,7 +2234,7 @@ def render_data_export(patients, reports, interventions):
                     long_data.append({
                         "Subject_ID": pid,
                         "Time_Point": i + 1,
-                        "Date": r.get("date", ""),
+                        "Date": r.get("report_date", r.get("date", "")),
                         "Post_Op_Day": p.get("post_op_day", ""),
                         "Overall_Score": r.get("overall_score", ""),
                         "Pain": symptoms.get("pain", ""),
