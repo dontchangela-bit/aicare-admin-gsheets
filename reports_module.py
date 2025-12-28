@@ -1320,27 +1320,50 @@ def render_trend_comparison(patients, reports):
         format_func=lambda x: symptom_names.get(x, x)
     )
     
-    # 準備資料
+    # 準備資料 - 使用正確的欄位名稱
+    symptom_field_mapping = {
+        "pain": ("questionnaire_pain", "pain_score"),
+        "dyspnea": ("questionnaire_dyspnea", "dyspnea_score"),
+        "cough": ("questionnaire_cough", "cough_score"),
+        "fatigue": ("questionnaire_fatigue", "fatigue_score"),
+        "sleep": ("questionnaire_sleep", "sleep_score"),
+        "appetite": ("questionnaire_appetite", "appetite_score"),
+        "mood": ("questionnaire_mood", "mood_score"),
+    }
+    
+    q_field, ai_field = symptom_field_mapping.get(selected_symptom, ("", ""))
+    
     chart_data = []
     for r in patient_reports:
         date = r.get("report_date", r.get("date", ""))
         
-        # 問卷分數
-        symptoms_str = r.get("symptoms", "{}")
-        try:
-            symptoms = json.loads(symptoms_str) if isinstance(symptoms_str, str) else symptoms_str
-            questionnaire_score = symptoms.get(selected_symptom, None)
-            if questionnaire_score is not None:
+        # 問卷分數（使用正確欄位）
+        questionnaire_score = r.get(q_field)
+        if questionnaire_score is not None and questionnaire_score != "":
+            try:
                 questionnaire_score = float(questionnaire_score)
-        except:
+            except:
+                questionnaire_score = None
+        else:
             questionnaire_score = None
         
-        # AI 摘要提取分數（從 ai_summary 解析）
-        ai_summary = r.get("ai_summary", "")
-        ai_score = extract_score_from_summary(ai_summary, selected_symptom)
+        # AI 分數（使用正確欄位）
+        ai_score = r.get(ai_field)
+        if ai_score is not None and ai_score != "":
+            try:
+                ai_score = float(ai_score)
+            except:
+                ai_score = None
+        else:
+            ai_score = None
         
         # 整體分數
-        overall_score = r.get("overall_score", None)
+        overall_score = r.get("overall_score")
+        if overall_score is not None and overall_score != "":
+            try:
+                overall_score = float(overall_score)
+            except:
+                overall_score = None
         
         chart_data.append({
             "日期": date,
